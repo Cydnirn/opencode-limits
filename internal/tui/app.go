@@ -64,6 +64,10 @@ type App struct {
 	lastErr  error
 	quitting bool
 	help     bool
+	// scroll is the vertical offset in body lines from the top of the active
+	// screen. Without it a screen taller than the terminal simply clipped and
+	// the rows below the fold were unreachable.
+	scroll int
 	// spinner frames the refresh indicator.
 	spin int
 }
@@ -124,6 +128,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.snap.Now.IsZero() {
 			a.snap.Now = time.Now().UTC()
 		}
+		// Fewer rows may have come back than the current offset assumes.
+		a.clampScroll()
 		return a, nil
 
 	case tickMsg:
@@ -156,17 +162,30 @@ func (a App) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "1":
-		a.screen = ScreenOverview
+		a.setScreen(ScreenOverview)
 	case "2":
-		a.screen = ScreenModels
+		a.setScreen(ScreenModels)
 	case "3":
-		a.screen = ScreenPricing
+		a.setScreen(ScreenPricing)
 	case "4":
-		a.screen = ScreenTrend
+		a.setScreen(ScreenTrend)
 	case "tab":
-		a.screen = (a.screen + 1) % screenCount
+		a.setScreen((a.screen + 1) % screenCount)
 	case "shift+tab":
-		a.screen = (a.screen + screenCount - 1) % screenCount
+		a.setScreen((a.screen + screenCount - 1) % screenCount)
+
+	case "down", "j":
+		a.scrollBy(1)
+	case "up", "k":
+		a.scrollBy(-1)
+	case "pgdown", " ":
+		a.scrollBy(a.pageSize())
+	case "pgup":
+		a.scrollBy(-a.pageSize())
+	case "home", "g":
+		a.scroll = 0
+	case "end", "G":
+		a.scroll = a.maxScroll()
 
 	case "s":
 		a.sortMode = a.sortMode.next()
@@ -180,6 +199,109 @@ func (a App) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// bodyHeight is the number of lines available to screen content, after
+// reserving one line each for the tab bar and the key hints.
+func (a App) bodyHeight() int {
+	h := a.height - 2
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// renderBody renders the active screen's full content, unclipped.
+func (a App) renderBody() string {
+	switch a.screen {
+	case ScreenOverview:
+		return renderOverview(a.theme, a.snap, a.width, a.warning, a.danger)
+	case ScreenModels:
+		return renderModels(a.theme, a.snap, a.width, a.sortMode, a.warning, a.danger)
+	case ScreenPricing:
+		return renderPricing(a.theme, a.snap, a.width, a.warning, a.danger)
+	case ScreenTrend:
+		return renderTrend(a.theme, a.snap, a.width, a.bodyHeight(), a.warning, a.danger)
+	}
+	return ""
+}
+
+// bodyLines splits the rendered body into lines, dropping the trailing empty
+// element left by a final newline.
+func (a App) bodyLines() []string {
+	body := strings.TrimRight(a.renderBody(), "\n")
+	if body == "" {
+		return nil
+	}
+	return strings.Split(body, "\n")
+}
+
+// pageSize is how many lines a page-scroll moves: one viewport, less one line of
+// context so the reader keeps their place across the jump.
+func (a App) pageSize() int {
+	n := a.bodyHeight() - 1
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// maxScroll is the largest useful offset: the last page, not the last line, so
+// the viewport is always full of content.
+func (a App) maxScroll() int {
+	overflow := len(a.bodyLines()) - a.bodyHeight()
+	if overflow < 0 {
+		return 0
+	}
+	return overflow
+}
+
+// hasOverflow reports whether the active screen exceeds the viewport.
+func (a App) hasOverflow() bool { return a.maxScroll() > 0 }
+
+// clampScroll keeps the offset inside the scrollable range.
+func (a *App) clampScroll() {
+	max := a.maxScroll()
+	if a.scroll > max {
+		a.scroll = max
+	}
+	if a.scroll < 0 {
+		a.scroll = 0
+	}
+}
+
+// scrollBy moves the viewport by delta lines, clamped.
+func (a *App) scrollBy(delta int) {
+	a.scroll += delta
+	a.clampScroll()
+}
+
+// setScreen switches screens and resets the offset, so a long screen's position
+// does not strand a short one past the end of its content.
+func (a *App) setScreen(s Screen) {
+	a.screen = s
+	a.scroll = 0
+}
+
+// viewport returns just the visible body lines, honouring the scroll offset.
+// It is separated from View so tests can assert what the user actually sees
+// without the tab bar and hints underneath.
+func (a App) viewport() string {
+	bodyH := a.bodyHeight()
+	lines := a.bodyLines()
+
+	start := a.scroll
+	if start > len(lines)-bodyH {
+		start = len(lines) - bodyH
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + bodyH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
 // View renders the active screen.
 func (a App) View() string {
 	if a.quitting {
@@ -189,27 +311,18 @@ func (a App) View() string {
 		return a.renderHelp()
 	}
 
-	// Reserve two lines: tab bar and key hints.
-	bodyH := a.height - 2
-	var body string
-	switch a.screen {
-	case ScreenOverview:
-		body = renderOverview(a.theme, a.snap, a.width, a.warning, a.danger)
-	case ScreenModels:
-		body = renderModels(a.theme, a.snap, a.width, a.sortMode, a.warning, a.danger)
-	case ScreenPricing:
-		body = renderPricing(a.theme, a.snap, a.width, a.warning, a.danger)
-	case ScreenTrend:
-		body = renderTrend(a.theme, a.snap, a.width, bodyH, a.warning, a.danger)
-	}
-
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if len(lines) > bodyH && bodyH > 0 {
-		lines = lines[:bodyH]
-	}
+	// clampScroll inside viewport() also covers a resize or a refresh that
+	// returned fewer rows since the offset was last set.
+	body := a.viewport()
 
 	var b strings.Builder
-	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString(body)
+	// Pad so the tab bar stays anchored to the bottom on short screens.
+	if body != "" {
+		if pad := a.bodyHeight() - len(strings.Split(body, "\n")); pad > 0 {
+			b.WriteString(strings.Repeat("\n", pad))
+		}
+	}
 	b.WriteString("\n")
 	b.WriteString(a.renderTabs())
 	b.WriteString("\n")
@@ -230,12 +343,19 @@ func (a App) renderTabs() string {
 		}
 	}
 	left := " " + strings.Join(parts, "  ")
-	status := ""
-	if a.loading {
-		status = a.theme.Dim.Render("refreshing…")
-	} else if a.lastErr != nil {
-		status = a.theme.Warn.Render("last refresh failed")
+	var parts2 []string
+	if a.hasOverflow() {
+		// Tell the user there is more, and roughly where they are, since the
+		// arrow-key affordance is otherwise invisible.
+		parts2 = append(parts2, a.theme.Dim.Render(fmt.Sprintf("↕ %d/%d",
+			a.scroll+a.bodyHeight(), len(a.bodyLines()))))
 	}
+	if a.loading {
+		parts2 = append(parts2, a.theme.Dim.Render("refreshing…"))
+	} else if a.lastErr != nil {
+		parts2 = append(parts2, a.theme.Warn.Render("last refresh failed"))
+	}
+	status := strings.Join(parts2, "  ")
 	if status != "" {
 		pad := a.width - visibleWidth(left) - visibleWidth(status) - 1
 		if pad > 0 {
@@ -247,7 +367,7 @@ func (a App) renderTabs() string {
 
 // renderHints draws the key legend.
 func (a App) renderHints() string {
-	hints := []string{"q quit", "r refresh", "s sort", "? help", "tab screen"}
+	hints := []string{"↑↓ scroll", "q quit", "r refresh", "s sort", "? help", "tab screen"}
 	return a.theme.Dim.Render(" " + strings.Join(hints, "  "))
 }
 
@@ -260,6 +380,9 @@ func (a App) renderHelp() string {
 	b.WriteString("Per-model budget tracking for OpenCode Go plans.\n\n")
 	rows := [][2]string{
 		{"1-4 / tab", "switch screen"},
+		{"↑ / ↓ (k/j)", "scroll the current screen"},
+		{"pgup / pgdn", "scroll one page"},
+		{"home / end", "jump to top / bottom"},
 		{"s", "cycle Models sort order"},
 		{"r", "refresh now"},
 		{"?", "toggle this help"},

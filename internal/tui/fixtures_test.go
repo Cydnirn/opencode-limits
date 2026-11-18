@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -301,4 +302,71 @@ func screens() []screen {
 			return renderTrend(t, s, w, h, warning, danger)
 		}},
 	}
+}
+
+// longFixture reproduces a realistically large workspace: the live plan exposes
+// 34 models, which is far more rows than fit on a normal terminal. The base
+// fixture only has a handful, so it hides every scrolling bug — the Models
+// screen never overflowed and the arrow keys were never exercised.
+func longFixture(allocs map[string]float64) Snapshot {
+	snap := newFixture(allocs)
+	now := snap.Now
+
+	names := []string{
+		"GPT-6 Luna", "GPT-5.6 Luna", "DeepSeek V4.1 Flash", "DeepSeek V4 Pro",
+		"GLM-5.3", "GLM-5.2", "GLM-5.3-Flash", "Kimi K3", "Kimi K3.1 Pro",
+		"Kimi K2.7 Code", "Qwen3.8 Max", "Qwen3.8 Flash", "Qwen3.7 Plus",
+		"Qwen4 Max", "MiniMax-M3", "MiniMax M3.1 Flash", "MiMo V2.5",
+		"MiMo V2.5 Pro", "MiMo-V2.6-Pro", "MiMo-V2.6-Flash", "Grok 4.7",
+		"Gemini 4 Argon", "Claude Haiku 5.5", "Claude Sonnet 4", "Hy3", "Hy4",
+		"Hy4 preview", "LongCat-2.0", "Step 5 Preview", "MiniMax M3 Flash",
+		"Beam Free", "Hy4 flash Free", "LongCat 2.5 Free", "Iceman Free",
+	}
+
+	catalog := map[string]console.CatalogModel{}
+	usage := make([]console.ModelUsage, 0, len(names))
+	bigAllocs := map[string]float64{}
+	for i, name := range names {
+		id := fmt.Sprintf("model-%02d", i)
+		catalog[id] = console.CatalogModel{
+			ID:               id,
+			Name:             name,
+			ContextLimit:     1_000_000,
+			OutputLimit:      128_000,
+			InputPerMTok:     0.1 + float64(i%7)*0.3,
+			OutputPerMTok:    0.5 + float64(i%5)*1.1,
+			CacheReadPerMTok: 0.01,
+		}
+		// Spend descends, so sorting by remaining is a stable, checkable order.
+		usage = append(usage, console.ModelUsage{
+			Model:          id,
+			Provider:       "opencode-go",
+			Requests:       int64(1000 - i*20),
+			InputTokens:    int64(500_000 - i*10_000),
+			OutputTokens:   int64(60_000 - i*1_000),
+			CacheRead:      int64(200_000 - i*3_000),
+			CacheWrite5m:   int64(5_000 + i*100),
+			CostMicroCents: console.FromUSD(float64(len(names)-i) * 0.37),
+		})
+		// Every third model gets an allocation, so both the allocated and
+		// unallocated paths render in a long list.
+		if i%3 == 0 {
+			bigAllocs[id] = float64(20 + i)
+		}
+	}
+
+	snap.Catalog = catalog
+	snap.Allocations = bigAllocs
+	usageByWindow := map[budget.Window][]console.ModelUsage{}
+	for _, w := range budget.All() {
+		usageByWindow[w] = usage
+	}
+	snap.Windows = budget.Build(budget.Input{
+		Now:           now,
+		Meters:        snap.Status.Access.Meters,
+		Allocations:   bigAllocs,
+		UsageByWindow: usageByWindow,
+		Catalog:       catalog,
+	})
+	return snap
 }
