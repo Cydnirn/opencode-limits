@@ -114,6 +114,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = m.Width
 		a.height = m.Height
+		// Growing the terminal can make the content fit, which lowers the
+		// maximum offset; without re-clamping the viewport stays past the end
+		// and the screen looks blank.
+		a.clampScroll()
 		return a, nil
 
 	case refreshedMsg:
@@ -359,10 +363,22 @@ func (a App) renderTabs() string {
 	left := " " + strings.Join(parts, "  ")
 	var parts2 []string
 	if a.hasOverflow() {
-		// Tell the user there is more, and roughly where they are, since the
-		// arrow-key affordance is otherwise invisible.
-		parts2 = append(parts2, a.theme.Dim.Render(fmt.Sprintf("↕ %d/%d",
-			a.scroll+a.bodyHeight(), len(a.bodyLines()))))
+		// Show the visible row range out of the total, so the extent is obvious
+		// and it is clear the list ends rather than scrolling forever.
+		total := len(a.bodyLines())
+		start := a.scroll
+		if start > total-a.bodyHeight() {
+			start = total - a.bodyHeight()
+		}
+		if start < 0 {
+			start = 0
+		}
+		end := start + a.bodyHeight()
+		if end > total {
+			end = total
+		}
+		parts2 = append(parts2, a.theme.Dim.Render(fmt.Sprintf("↑↓ rows %d-%d of %d",
+			start+1, end, total)))
 	}
 	if a.loading {
 		parts2 = append(parts2, a.theme.Dim.Render("refreshing…"))

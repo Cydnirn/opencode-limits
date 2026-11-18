@@ -86,8 +86,14 @@ build: check-deps
 ## install: build and install onto PATH (uses GOBIN on Windows, $(BINDIR) elsewhere)
 install: build
 	@mkdir -p '$(INSTALL_TO)'
-	@cp '$(HOST_BIN)' '$(INSTALL_TO)/$(BINARY)$(EXE)'
-	@chmod +x '$(INSTALL_TO)/$(BINARY)$(EXE)' 2>/dev/null || true
+	@# A running copy holds the file open (ETXTBSY), so write then rename into
+	@# place; the rename replaces the inode and works while the old one runs.
+	@cp -f '$(HOST_BIN)' '$(INSTALL_TO)/$(BINARY)$(EXE).new'
+	@chmod +x '$(INSTALL_TO)/$(BINARY)$(EXE).new' 2>/dev/null || true
+	@mv -f '$(INSTALL_TO)/$(BINARY)$(EXE).new' '$(INSTALL_TO)/$(BINARY)$(EXE)'
+	@if pgrep -x '$(BINARY)' >/dev/null 2>&1; then \
+		printf '%s    note: an older copy is still running; restart it to use this build%s\n' '$(DIM)' '$(OFF)'; \
+	fi
 	@printf '%s==> installed %s%s\n' '$(BOLD)' '$(INSTALL_TO)/$(BINARY)$(EXE)' '$(OFF)'
 	@case ":$$PATH:" in *":$(INSTALL_TO):"*) ;; *) \
 		printf '%s    note: $(INSTALL_TO) is not on your PATH. Add it:%s\n' '$(DIM)' '$(OFF)'; \

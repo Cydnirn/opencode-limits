@@ -45,7 +45,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 
 	b.WriteString(t.Header.Render("MODEL DETAIL"))
 	b.WriteString(t.Dim.Render(fmt.Sprintf("   sorted by %s  (s cycles)", mode)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
 	// Gather every model that appears in any window or has an allocation.
 	type row struct {
@@ -135,6 +135,17 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 			padLeft("%PLAN", 6),
 		}
 	}
+	// State the total explicitly. Without it the list has no visible end and a
+	// reader cannot tell whether more rows exist below.
+	allocated := 0
+	for _, r := range list {
+		if r.monthly.HasAllocation {
+			allocated++
+		}
+	}
+	b.WriteString(t.Dim.Render(fmt.Sprintf("  %d models (%d allocated, %d unallocated)",
+		len(list), allocated, len(list)-allocated)))
+	b.WriteString("\n")
 	b.WriteString(t.Dim.Render("  " + strings.Join(header, strings.Repeat(" ", gap))))
 	b.WriteString("\n")
 

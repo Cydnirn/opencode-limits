@@ -177,11 +177,16 @@ func TestScrollIndicator(t *testing.T) {
 		t.Fatal("fixture should overflow")
 	}
 	hint := stripANSI(app.renderTabs())
-	if !strings.Contains(hint, "↕") {
-		t.Errorf("overflowing screen should show a scroll position hint, got %q", hint)
+	// The indicator states the visible row range and the total, so the end of the
+	// list is knowable instead of open-ended.
+	if !strings.Contains(hint, "of ") {
+		t.Errorf("overflowing screen should show a scroll range hint, got %q", hint)
 	}
-	if !strings.Contains(hint, fmt.Sprintf("/%d", len(app.bodyLines()))) {
+	if !strings.Contains(hint, fmt.Sprintf("of %d", len(app.bodyLines()))) {
 		t.Errorf("hint should state the total line count, got %q", hint)
+	}
+	if !strings.Contains(hint, "rows 1-") {
+		t.Errorf("hint should state the visible range, got %q", hint)
 	}
 
 	// Tall enough that nothing is hidden.
@@ -189,5 +194,69 @@ func TestScrollIndicator(t *testing.T) {
 	roomy.height = 200
 	if roomy.hasOverflow() {
 		t.Fatal("tall viewport should not report overflow")
+	}
+}
+
+// Growing the terminal can make the content fit, which lowers the maximum
+// offset. Without re-clamping on resize the viewport stays past the end and the
+// screen renders blank.
+func TestResizeReclampsScroll(t *testing.T) {
+	app := newScrollableApp(t)
+	app = press(t, app, "end")
+	if app.scroll == 0 {
+		t.Fatal("precondition: expected a non-zero scroll")
+	}
+
+	var model tea.Model = app
+	model, _ = model.Update(tea.WindowSizeMsg{Width: app.width, Height: 200})
+	grown := model.(App)
+
+	if grown.maxScroll() != 0 {
+		t.Fatalf("tall terminal should fit everything, maxScroll = %d", grown.maxScroll())
+	}
+	if grown.scroll != 0 {
+		t.Fatalf("scroll = %d after growing the terminal, want 0 (view would be blank)",
+			grown.scroll)
+	}
+	if strings.TrimSpace(stripANSI(grown.viewport())) == "" {
+		t.Error("viewport is blank after resize")
+	}
+}
+
+// Scrolling must stop at the last page however many times the key is pressed.
+// There is no unbounded scrolling: the offset is capped at maxScroll.
+func TestScrollHasHardLimit(t *testing.T) {
+	app := newScrollableApp(t)
+	max := app.maxScroll()
+	if max <= 0 {
+		t.Fatal("fixture must overflow")
+	}
+	var model tea.Model = app
+	for i := 0; i < 1000; i++ {
+		model, _ = model.Update(keyMsg("down"))
+	}
+	got := model.(App)
+	if got.scroll != max {
+		t.Fatalf("after 1000 downs scroll = %d, want it pinned at maxScroll %d", got.scroll, max)
+	}
+	// And the last page must still show real content, not blank padding.
+	view := strings.TrimSpace(stripANSI(got.viewport()))
+	if view == "" {
+		t.Fatal("last page is blank")
+	}
+	if !strings.Contains(view, "LongCat 2.5 Free") {
+		t.Errorf("last page should show the final model row, got:\n%s", view)
+	}
+}
+
+// The Models screen states how many models it lists.
+func TestModelsScreenStatesCount(t *testing.T) {
+	out := stripANSI(renderModels(themeForTest(), longFixture(nil), 140, sortByRemaining, 70, 95))
+	if !strings.Contains(out, "34 models") {
+		t.Errorf("models screen should state the total model count, got:\n%s",
+			strings.SplitN(out, "\n", 3)[0])
+	}
+	if !strings.Contains(out, "allocated") || !strings.Contains(out, "unallocated") {
+		t.Error("count line should split allocated from unallocated")
 	}
 }
