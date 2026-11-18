@@ -92,6 +92,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 			spend:     r.monthly.Spend(),
 			requests:  r.usage.Requests,
 			tokens:    r.usage.TotalTokens(),
+			name:      r.name,
 		}
 	})
 
@@ -226,6 +227,12 @@ type sortKey struct {
 	spend     console.MicroCents
 	requests  int64
 	tokens    int64
+	// name is the final tiebreak. Without it every model with identical usage
+	// compares equal, sort.SliceStable then preserves the order the rows were
+	// gathered in - and they are gathered from a map, whose iteration order Go
+	// randomises per call. The list visibly reshuffled on every render and the
+	// scroll offset was computed against a different ordering than the viewport.
+	name string
 }
 
 // sortRows orders model rows by the active mode. Unallocated models always sort
@@ -242,7 +249,9 @@ func sortRows[T any](rows []T, mode sortMode, key func(T) sortKey) {
 			if a.remaining != b.remaining {
 				return a.remaining < b.remaining
 			}
-			return a.spend > b.spend
+			if a.spend != b.spend {
+				return a.spend > b.spend
+			}
 		case sortBySpend:
 			if a.spend != b.spend {
 				return a.spend > b.spend
@@ -256,7 +265,8 @@ func sortRows[T any](rows []T, mode sortMode, key func(T) sortKey) {
 				return a.tokens > b.tokens
 			}
 		}
-		return false
+		// Deterministic tiebreak so equal rows keep a fixed order.
+		return a.name < b.name
 	})
 }
 
