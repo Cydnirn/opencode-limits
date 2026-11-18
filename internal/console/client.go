@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -222,15 +223,46 @@ func (c *Client) UsageSince(since time.Time) ([]ModelUsage, error) {
 	return out, nil
 }
 
+// flexFloat decodes a JSON number or a numeric string.
+//
+// The Console's model catalog is inconsistent across fields and across models:
+// prices arrive as JSON numbers (all 77 entries in the live catalog) while other
+// counters arrive as strings. Decoding into a plain float64 fails on the string
+// form and decoding into a string fails on the numeric form, so every price
+// field uses this type instead.
+type flexFloat float64
+
+// UnmarshalJSON accepts a number, a numeric string, null, or "-".
+func (f *flexFloat) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" || s == `""` || s == `"-"` || s == "0" {
+		*f = 0
+		return nil
+	}
+	if unquoted, ok := strings.CutPrefix(s, `"`); ok {
+		s = strings.TrimSuffix(unquoted, `"`)
+	}
+	if s == "" || s == "-" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("price value %s is neither a number nor a numeric string: %w", string(b), err)
+	}
+	*f = flexFloat(v)
+	return nil
+}
+
 // wirePrice is one price entry in the catalog.
 type wirePrice struct {
-	Price     string          `json:"price"`
-	Cache     *wireCache      `json:"cache"`
-	Overrides []wireOverride  `json:"overrides"`
+	Price     flexFloat      `json:"price"`
+	Cache     *wireCache     `json:"cache"`
+	Overrides []wireOverride `json:"overrides"`
 }
 
 type wireCache struct {
-	Read  string          `json:"read"`
+	Read  flexFloat       `json:"read"`
 	Write json.RawMessage `json:"write"`
 }
 
@@ -240,7 +272,7 @@ type wireOverride struct {
 			Gt int64 `json:"gt"`
 		} `json:"context"`
 	} `json:"when"`
-	Price float64 `json:"price"`
+	Price flexFloat `json:"price"`
 }
 
 type wireModel struct {
@@ -253,8 +285,8 @@ type wireModel struct {
 	} `json:"limit"`
 	Cost struct {
 		Text struct {
-			Input      wirePrice     `json:"input"`
-			Output     wirePrice     `json:"output"`
+			Input       wirePrice         `json:"input"`
+			Output      wirePrice         `json:"output"`
 			Multipliers []json.RawMessage `json:"multipliers"`
 		} `json:"text"`
 	} `json:"cost"`
@@ -281,10 +313,10 @@ func (c *Client) Catalog() (map[string]CatalogModel, error) {
 				InputLimit:   m.Limit.Input,
 				OutputLimit:  m.Limit.Output,
 			}
-			cm.InputPerMTok = parsePrice(m.Cost.Text.Input.Price)
-			cm.OutputPerMTok = parsePrice(m.Cost.Text.Output.Price)
+			cm.InputPerMTok = float64(m.Cost.Text.Input.Price)
+			cm.OutputPerMTok = float64(m.Cost.Text.Output.Price)
 			if m.Cost.Text.Input.Cache != nil {
-				cm.CacheReadPerMTok = parsePrice(m.Cost.Text.Input.Cache.Read)
+				cm.CacheReadPerMTok = float64(m.Cost.Text.Input.Cache.Read)
 				tiers := map[string]float64{}
 				var scalar float64
 				if err := json.Unmarshal(m.Cost.Text.Input.Cache.Write, &scalar); err == nil {
@@ -308,7 +340,7 @@ func (c *Client) Catalog() (map[string]CatalogModel, error) {
 				if ov.When.Context.Gt > 0 {
 					cm.HasContextOverride = true
 					cm.OverrideAtContext = ov.When.Context.Gt
-					cm.OverrideInputRate = ov.Price
+					cm.OverrideInputRate = float64(ov.Price)
 					break
 				}
 			}
@@ -409,16 +441,4 @@ func (c *Client) Billing() (BillingStatus, error) {
 		AvailableMicroCents: avail,
 		Funded:              w.Funded,
 	}, nil
-}
-
-// parsePrice converts the catalog's per-million-token string to a float.
-func parsePrice(s string) float64 {
-	if s == "" || s == "-" {
-		return 0
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	return v
 }

@@ -440,3 +440,98 @@ func TestStoreSaveCreatesFileWhenAbsent(t *testing.T) {
 		t.Errorf("round trip = %+v", got)
 	}
 }
+
+// The live catalog sends prices as JSON NUMBERS (all 77 entries), while other
+// counters are numeric strings. An earlier version decoded Price as a string and
+// failed against the real API with "cannot unmarshal number into Go struct field
+// ...price of type string" while every fixture-based test passed, because the
+// fixtures only ever used the string form. Both forms must decode.
+func TestFlexFloatAcceptsNumberAndString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  float64
+	}{
+		{name: "json number", input: `0.1`, want: 0.1},
+		{name: "json integer", input: `0`, want: 0},
+		{name: "negative number", input: `-1.25`, want: -1.25},
+		{name: "numeric string", input: `"1.4"`, want: 1.4},
+		{name: "string zero", input: `"0"`, want: 0},
+		{name: "dash placeholder", input: `"-"`, want: 0},
+		{name: "empty string", input: `""`, want: 0},
+		{name: "null", input: `null`, want: 0},
+		{name: "large value", input: `1234.5678`, want: 1234.5678},
+		{name: "exponent", input: `1e-3`, want: 0.001},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got flexFloat
+			if err := json.Unmarshal([]byte(tt.input), &got); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", tt.input, err)
+			}
+			if float64(got) != tt.want {
+				t.Errorf("flexFloat(%s) = %v, want %v", tt.input, float64(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestFlexFloatRejectsGarbage(t *testing.T) {
+	var got flexFloat
+	if err := json.Unmarshal([]byte(`"cheap"`), &got); err == nil {
+		t.Fatal("expected an error for a non-numeric string")
+	}
+}
+
+// Catalog must parse the exact numeric-price shape the live API returns.
+func TestCatalogWithNumericPrices(t *testing.T) {
+	const numericCatalog = `{"opencode":{"id":"opencode","models":{
+	 "gpt-6-luna":{"id":"gpt-6-luna","name":"GPT-6 Luna",
+	   "limit":{"context":1050000,"output":128000},
+	   "cost":{"text":{
+	     "input":{"price":0.1,"cache":{"read":0.01,"write":{"30m":0.125,"12h":0.25}},
+	              "overrides":[{"when":{"context":{"gt":272000}},"price":0.2}]},
+	     "output":{"price":0.5}}}},
+	 "beam-free":{"id":"beam-free","name":"Beam Free",
+	   "limit":{"context":1048576,"output":131072},
+	   "cost":{"text":{"input":{"price":0,"cache":{"read":0}},"output":{"price":0}}}}
+	}}}`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, numericCatalog)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "credential.json")
+	writeCredential(t, credPath, Credential{
+		Server: srv.URL, Access: "tok",
+		Expires: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	c := NewClient(&Store{Path: credPath}, srv.URL)
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+
+	cat, err := c.Catalog()
+	if err != nil {
+		t.Fatalf("Catalog with numeric prices: %v", err)
+	}
+	luna := cat["gpt-6-luna"]
+	if luna.InputPerMTok != 0.1 || luna.OutputPerMTok != 0.5 {
+		t.Errorf("luna prices = in %v out %v, want 0.1/0.5", luna.InputPerMTok, luna.OutputPerMTok)
+	}
+	if luna.CacheReadPerMTok != 0.01 {
+		t.Errorf("luna cache read = %v, want 0.01", luna.CacheReadPerMTok)
+	}
+	if !luna.HasContextOverride || luna.OverrideInputRate != 0.2 {
+		t.Errorf("luna override = %v at %v, want 0.2 at 272000",
+			luna.OverrideInputRate, luna.OverrideAtContext)
+	}
+	if !cat["beam-free"].Free() {
+		t.Error("beam-free should be free")
+	}
+}

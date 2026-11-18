@@ -1,0 +1,221 @@
+// Command opencode-limits is a TUI that shows per-model spend and remaining
+// budget for an OpenCode Go plan, across the rolling 5-hour, weekly, and
+// monthly windows.
+//
+// It authenticates with the OpenCode Console OAuth credential already on disk
+// (written by the opencode-console CLI), refreshing it in place. When no
+// credential exists it runs the same device-code login the CLI uses.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/cydnirn/opencode-limits/internal/config"
+	"github.com/cydnirn/opencode-limits/internal/console"
+	"github.com/cydnirn/opencode-limits/internal/tui"
+)
+
+// version is stamped at build time via -ldflags.
+var version = "dev"
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "opencode-limits: "+err.Error())
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	var (
+		once        = flag.Bool("once", false, "print a text report and exit instead of running the TUI")
+		server      = flag.String("server", "", "Console API origin (default: from credential, else https://opencode.ai/console)")
+		configPath  = flag.String("config", "", "path to config.toml (default: per-OS config dir)")
+		refresh     = flag.Duration("refresh", 0, "refresh interval (default: from config, else 60s)")
+		login       = flag.Bool("login", false, "force a fresh device-code login")
+		showVersion = flag.Bool("version", false, "print version and exit")
+		initConfig  = flag.Bool("init", false, "write a starter config.toml from the plan's models and exit")
+		noLogin     = flag.Bool("no-login", false, "fail instead of starting a device login when unauthenticated")
+	)
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("opencode-limits " + version)
+		return nil
+	}
+
+	paths, err := config.FromOSEnv().Resolve()
+	if err != nil {
+		return err
+	}
+	if *configPath != "" {
+		paths.ConfigFile = *configPath
+	}
+	if *server != "" {
+		paths.Server = *server
+	}
+
+	cfg := config.Defaults()
+	if loaded, lerr := config.Load(paths.ConfigFile); lerr == nil {
+		cfg = loaded
+	} else if !errors.Is(lerr, config.ErrNoConfig) {
+		// A malformed config is worth failing on: silently ignoring a typo'd
+		// model ID loses the allocation the operator just wrote.
+		return lerr
+	}
+
+	store := &console.Store{Path: paths.CredentialFile}
+	client := console.NewClient(store, paths.Server)
+
+	if *initConfig {
+		return writeStarterConfig(client, paths, cfg)
+	}
+
+	if *login {
+		if err := deviceLogin(client, store, paths.Server); err != nil {
+			return err
+		}
+	}
+
+	if err := client.Prepare(); err != nil {
+		if errors.Is(err, console.ErrNoCredential) {
+			if *noLogin || *once {
+				return fmt.Errorf("not signed in to OpenCode Console.\n"+
+					"Run `opencode auth login` or `opencode-limits --login` first.\n"+
+					"Expected credential at: %s", paths.CredentialFile)
+			}
+			if err := deviceLogin(client, store, paths.Server); err != nil {
+				return err
+			}
+		} else {
+			var ae *console.AuthError
+			if errors.As(err, &ae) && ae.IsInvalidGrant() {
+				if *noLogin || *once {
+					return fmt.Errorf("Console session expired and the refresh token is no longer valid.\n"+
+						"Run `opencode-limits --login` to sign in again.\n(detail: %s)", ae.Error())
+				}
+				fmt.Fprintln(os.Stderr, "Session expired — starting a fresh login.")
+				if err := deviceLogin(client, store, paths.Server); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		}
+	}
+
+	loader := tui.Loader{
+		Client:     client,
+		Config:     cfg,
+		ConfigPath: paths.ConfigFile,
+		Timeout:    45 * time.Second,
+	}
+
+	if *once {
+		out, rerr := tui.RunOnce(context.Background(), loader)
+		if rerr != nil {
+			return rerr
+		}
+		fmt.Print(out)
+		return nil
+	}
+
+	interval := time.Duration(cfg.RefreshSeconds) * time.Second
+	if *refresh > 0 {
+		interval = *refresh
+	}
+
+	app := tui.NewApp(loader, interval, cfg.WarningPercent, cfg.DangerPercent)
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("run TUI: %w", err)
+	}
+	return nil
+}
+
+// deviceLogin runs the same device authorization flow the opencode CLI uses,
+// then persists the credential in the exact shape that CLI writes so both tools
+// stay signed in.
+func deviceLogin(client *console.Client, store *console.Store, server string) error {
+	hc := &http.Client{Timeout: 30 * time.Second}
+	dc, err := console.BeginDeviceLogin(hc, server)
+	if err != nil {
+		return fmt.Errorf("start device login: %w", err)
+	}
+	fmt.Println()
+	fmt.Println("  Sign in to OpenCode Console to continue.")
+	fmt.Println()
+	fmt.Printf("    Code: %s\n", dc.UserCode)
+	if dc.VerifyURL != "" {
+		fmt.Printf("    URL:  %s\n", dc.VerifyURL)
+	}
+	fmt.Println()
+	fmt.Println("  Waiting for approval…")
+
+	cred, err := console.PollDeviceToken(hc, server, dc, nil)
+	if err != nil {
+		return fmt.Errorf("device login: %w", err)
+	}
+	// Fill account and org identity so the file matches what the CLI writes.
+	cred, err = console.DescribeAccount(hc, cred)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read account details: %v\n", err)
+	}
+	if err := store.Save(cred); err != nil {
+		return fmt.Errorf("save credential: %w", err)
+	}
+	fmt.Printf("  Signed in as %s\n\n", cred.Email)
+	if err := client.Prepare(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeStarterConfig seeds a config file from the plan's models so the operator
+// has real model IDs to allocate rather than guesses.
+func writeStarterConfig(client *console.Client, paths config.Paths, cfg config.Config) error {
+	if _, err := os.Stat(paths.ConfigFile); err == nil {
+		return fmt.Errorf("config already exists at %s; not overwriting", paths.ConfigFile)
+	}
+	if err := client.Prepare(); err != nil {
+		return err
+	}
+	models, err := client.SubscriptionModels()
+	if err != nil {
+		return fmt.Errorf("read plan models: %w", err)
+	}
+	status, err := client.GoStatus()
+	if err != nil {
+		return fmt.Errorf("read plan status: %w", err)
+	}
+
+	// Seed every enabled model at 0 so the file documents real IDs; the
+	// operator fills in the numbers they care about.
+	allocs := map[string]float64{}
+	for _, m := range models {
+		if m.Enabled {
+			allocs[m.ID] = 0
+		}
+	}
+	cfg.Allocations = allocs
+
+	if err := config.Write(paths.ConfigFile, cfg); err != nil {
+		return err
+	}
+	fmt.Printf("Wrote %s with %d models.\n\n", paths.ConfigFile, len(allocs))
+	if status.Access != nil {
+		fmt.Printf("Plan allowance: 5h $%.2f, weekly $%.2f, monthly $%.2f\n",
+			status.Access.Meters.FiveHour.LimitMicroCents.USD(),
+			status.Access.Meters.Week.LimitMicroCents.USD(),
+			status.Access.Meters.Month.LimitMicroCents.USD())
+		fmt.Println("Set each model's monthly USD share in [allocations], then run opencode-limits.")
+	}
+	return nil
+}
