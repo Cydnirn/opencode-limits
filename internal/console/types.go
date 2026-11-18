@@ -85,7 +85,15 @@ func (m Meter) Remaining() MicroCents {
 }
 
 // Exhausted reports whether the window's limit has been reached.
-func (m Meter) Exhausted() bool { return m.UsedMicroCents >= m.LimitMicroCents }
+//
+// A zero limit means no data, not a spent budget: reporting exhaustion there
+// would light up "LIMIT REACHED" on a meter the API simply did not populate.
+func (m Meter) Exhausted() bool {
+	return m.LimitMicroCents > 0 && m.UsedMicroCents >= m.LimitMicroCents
+}
+
+// HasLimit reports whether the meter carries a usable limit.
+func (m Meter) HasLimit() bool { return m.LimitMicroCents > 0 }
 
 // Meters groups the three Go budget windows.
 type Meters struct {
@@ -325,8 +333,16 @@ type CatalogModel struct {
 	HasContextOverride bool
 	OverrideAtContext  int64
 	OverrideInputRate  float64
-	// HasTimeMultiplier reports weekday peak pricing.
+	// HasTimeMultiplier reports that pricing rises for a window of time.
 	HasTimeMultiplier bool
+	// MultiplierFactor is the advertised price factor (e.g. 2 for double).
+	MultiplierFactor float64
+	// MultiplierDays are the affected UTC weekdays, when the rule is
+	// weekday-scoped.
+	MultiplierDays []string
+	// MultiplierFromDate is the start date when the rule is date-scoped
+	// instead of daily.
+	MultiplierFromDate string
 }
 
 // Free reports whether the model costs nothing.

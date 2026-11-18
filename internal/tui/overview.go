@@ -317,6 +317,11 @@ func renderModelBudgetTable(t Theme, s Snapshot, width int, warning, danger int)
 	if w.OverAllocated > 0 {
 		writeWrapped(&b, fmt.Sprintf("over-allocated by %s", budget.FormatUSD(w.OverAllocated)), "  ", width)
 	}
+	// Anything marked with ~ is a projection from burn rate, not a measured
+	// value reported by the API. Say so rather than letting the two blur.
+	if hasProjection(w.Models) {
+		writeWrapped(&b, "~ projected from burn rate, not reported by the API", "  ", width)
+	}
 	b.WriteString("\n")
 	return clipLines(b.String(), width)
 }
@@ -404,4 +409,15 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// hasProjection reports whether any row carries a burn-rate projection, so the
+// legend is only printed when it applies.
+func hasProjection(models []budget.Attribution) bool {
+	for _, m := range models {
+		if m.ETA > 0 {
+			return true
+		}
+	}
+	return false
 }

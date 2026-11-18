@@ -94,6 +94,13 @@ func run() error {
 			if err := deviceLogin(client, store, paths.Server); err != nil {
 				return err
 			}
+		} else if errors.Is(err, console.ErrConcurrentRefresh) {
+			// Another opencode process is mid-refresh and the file has not been
+			// updated yet. Starting a device login here would overwrite a
+			// credential that is very likely still valid, so refuse instead.
+			return fmt.Errorf("another opencode process appears to be refreshing the Console "+
+				"session right now, so this tool will not start a new login.\n"+
+				"Wait a moment and retry. If it keeps happening, run `opencode-limits --login`.\n(detail: %v)", err)
 		} else {
 			var ae *console.AuthError
 			if errors.As(err, &ae) && ae.IsInvalidGrant() {

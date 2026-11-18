@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,8 +59,8 @@ const catalogJSON = `{"opencode":{"id":"opencode","name":"Personal / OpenCode","
    "cost":{"text":{"input":{"price":"1.4","cache":{"read":"0.26"}},"output":{"price":"4.4"}}}},
  "deepseek-v4.1-flash":{"id":"deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash",
    "limit":{"context":1000000,"output":384000},
-   "cost":{"text":{"input":{"price":"0.15","cache":{"read":"0.003"}},"output":{"price":"0.6"},
-             "multipliers":[{"when":{"utc_days":{"in":["mon"]}},"factor":2}]}}},
+   "cost":{"text":{"input":{"price":"0.15","cache":{"read":"0.003"}},"output":{"price":"0.6"}},
+             "multipliers":[{"when":{"utc_days":{"in":["mon"]}},"factor":2}]}},
  "hy4-flash-free":{"id":"hy4-flash-free","name":"Hy4 flash Free",
    "limit":{"context":1048576,"output":65536},
    "cost":{"text":{"input":{"price":"0","cache":{"read":"0"}},"output":{"price":"0"}}}}
@@ -362,12 +363,18 @@ func TestRefreshInvalidGrantSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	ae, ok := err.(*AuthError)
-	if !ok {
-		t.Fatalf("error type = %T, want *AuthError", err)
+	var ae *AuthError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error type = %T, want a wrapped *AuthError", err)
 	}
 	if !ae.IsInvalidGrant() {
 		t.Fatalf("expected invalid_grant, got %+v", ae)
+	}
+	// The credential file still holds the rejected token, so this must be
+	// reported as a lost race rather than a dead session: --login would
+	// otherwise overwrite a credential another process may be using.
+	if !errors.Is(err, ErrConcurrentRefresh) {
+		t.Fatalf("expected ErrConcurrentRefresh, got %v", err)
 	}
 }
 

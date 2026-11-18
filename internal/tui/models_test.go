@@ -421,7 +421,7 @@ func TestRenderPricingContent(t *testing.T) {
 	if !strings.Contains(out, "ctx: $2.50 in") {
 		t.Errorf("missing context override tier:\n%s", out)
 	}
-	if !strings.Contains(out, "peak x2") {
+	if !strings.Contains(out, "x2") {
 		t.Errorf("missing peak multiplier note:\n%s", out)
 	}
 }

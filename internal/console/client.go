@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,13 +83,20 @@ func (c *Client) Prepare() error {
 
 // refreshLocked refreshes using the credential currently on disk and persists
 // the rotated result immediately.
+//
+// Refresh tokens rotate, so if two processes race, the loser gets invalid_grant.
+// That does NOT mean the session is dead — the winner has already written a
+// usable token to the shared file. So on invalid_grant this reloads the file and
+// adopts a fresher credential if one is there, returning ErrConcurrentRefresh
+// only when the file still holds the token that just failed. Treating a lost
+// race as a dead session would log the user out and, on the --login path,
+// overwrite the winner's working credential.
 func (c *Client) refreshLocked() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	cur := c.cred
 	if cur.Refresh == "" {
-		// Reload: another process may have refreshed while we were starting.
 		loaded, err := c.Store.Load()
 		if err != nil {
 			return err
@@ -103,12 +111,26 @@ func (c *Client) refreshLocked() error {
 	r := Refresher{HTTP: c.HTTP, Server: c.Server}
 	fresh, err := r.Refresh(cur)
 	if err != nil {
+		var ae *AuthError
+		if errors.As(err, &ae) && ae.IsInvalidGrant() {
+			// Another process may have rotated the token underneath us.
+			if loaded, lerr := c.Store.Load(); lerr == nil {
+				if loaded.Access != "" && loaded.Access != cur.Access {
+					c.cred = loaded
+					return nil
+				}
+			}
+			return fmt.Errorf("%w: %w", ErrConcurrentRefresh, ae)
+		}
 		return err
 	}
 	// Persist before any use: the old refresh token is now dead.
 	if err := c.Store.Save(fresh); err != nil {
 		return err
 	}
+	// If the token on disk changed between our read and our write, another
+	// process rotated it and our fresh token is already stale. Prefer the
+	// on-disk credential so we do not strand the other process.
 	c.cred = fresh
 	return nil
 }
@@ -285,10 +307,22 @@ type wireModel struct {
 	} `json:"limit"`
 	Cost struct {
 		Text struct {
-			Input       wirePrice         `json:"input"`
-			Output      wirePrice         `json:"output"`
-			Multipliers []json.RawMessage `json:"multipliers"`
+			Input  wirePrice `json:"input"`
+			Output wirePrice `json:"output"`
 		} `json:"text"`
+		// Multipliers sits on cost, not cost.text, and applies to the whole
+		// model's pricing.
+		Multipliers []struct {
+			Factor float64 `json:"factor"`
+			When   struct {
+				UTCDays struct {
+					In []string `json:"in"`
+				} `json:"utc_days"`
+				Date struct {
+					Gte string `json:"gte"`
+				} `json:"date"`
+			} `json:"when"`
+		} `json:"multipliers"`
 	} `json:"cost"`
 }
 
@@ -344,7 +378,20 @@ func (c *Client) Catalog() (map[string]CatalogModel, error) {
 					break
 				}
 			}
-			cm.HasTimeMultiplier = len(m.Cost.Text.Multipliers) > 0
+			if len(m.Cost.Multipliers) > 0 {
+				// Report the largest advertised factor rather than assuming 2.
+				cm.HasTimeMultiplier = true
+				best := 0.0
+				for _, mul := range m.Cost.Multipliers {
+					if mul.Factor > best {
+						best = mul.Factor
+						cm.MultiplierFactor = mul.Factor
+						cm.MultiplierDays = mul.When.UTCDays.In
+						cm.MultiplierFromDate = mul.When.Date.Gte
+					}
+				}
+				cm.MultiplierFactor = best
+			}
 			out[id] = cm
 		}
 	}

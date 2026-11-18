@@ -118,8 +118,15 @@ func Write(path string, cfg Config) error {
 }
 
 // WriteFileAtomic writes b to path via a temp file in the same directory and a
-// rename, so a crash mid-write cannot truncate an existing file. On Windows a
-// rename over an existing file fails, so the target is removed first.
+// rename, so a crash mid-write cannot truncate an existing file.
+//
+// The rename replaces the target on every supported platform: Go's Windows
+// os.Rename uses MoveFileEx with MOVEFILE_REPLACE_EXISTING
+// (internal/syscall/windows/syscall_windows.go). There is deliberately no
+// remove-then-retry fallback here: deleting the target first would mean that a
+// rename failure for any unrelated reason (a sharing violation, a permissions
+// problem) left the user with no credential file at all. Failing with the
+// original intact is always better than succeeding at destroying it.
 func WriteFileAtomic(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
@@ -142,16 +149,12 @@ func WriteFileAtomic(path string, b []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
+	// Chmod before the rename so the target never exists with loose permissions,
+	// even momentarily.
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		// Windows cannot rename onto an existing file.
-		if removeErr := os.Remove(path); removeErr == nil {
-			if err2 := os.Rename(tmpName, path); err2 == nil {
-				return nil
-			}
-		}
 		return fmt.Errorf("rename temp file to %s: %w", path, err)
 	}
 	return nil

@@ -70,6 +70,8 @@ func fixtureCatalog() map[string]console.CatalogModel {
 			InputPerMTok:      1.25,
 			OutputPerMTok:     10,
 			HasTimeMultiplier: true,
+			MultiplierFactor:  2,
+			MultiplierDays:    []string{"mon", "tue", "wed", "thu", "fri"},
 		},
 		modelGemini: {
 			ID:                 modelGemini,

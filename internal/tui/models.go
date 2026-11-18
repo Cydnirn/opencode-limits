@@ -341,7 +341,7 @@ func renderPricing(t Theme, s Snapshot, width int, warning, danger int) string {
 				budget.FormatTokens(cm.OverrideAtContext), cm.OverrideInputRate))
 		}
 		if cm.HasTimeMultiplier {
-			notes = append(notes, "peak x2 (weekday UTC)")
+			notes = append(notes, multiplierNote(cm))
 		}
 		noteText := strings.Join(notes, "; ")
 		if cm.Free() {
@@ -375,7 +375,27 @@ func renderPricing(t Theme, s Snapshot, width int, warning, danger int) string {
 	}
 
 	b.WriteString("\n")
-	writeWrapped(&b, `"peak x2" models charge double during their listed weekday UTC windows.`, "  ", width)
+	writeWrapped(&b, "Peak pricing is the factor the catalog advertises, applied during the listed window.", "  ", width)
 	writeWrapped(&b, "Cache-W shows the cheapest cache-write tier when a model prices tiers apart.", "  ", width)
 	return b.String()
+}
+
+// multiplierNote renders the advertised peak-price factor and when it applies.
+// The factor comes from the catalog rather than being assumed, because the live
+// data uses different shapes (weekday peak windows and start dates) and more
+// than one factor value.
+func multiplierNote(cm console.CatalogModel) string {
+	factor := cm.MultiplierFactor
+	if factor <= 0 {
+		return "peak pricing (see catalog)"
+	}
+	label := "x" + budget.FormatFloat(factor, 1)
+	switch {
+	case len(cm.MultiplierDays) > 0:
+		return fmt.Sprintf("%s on %s UTC", label, strings.Join(cm.MultiplierDays, ","))
+	case cm.MultiplierFromDate != "":
+		return fmt.Sprintf("%s from %s", label, cm.MultiplierFromDate)
+	default:
+		return label + " peak"
+	}
 }

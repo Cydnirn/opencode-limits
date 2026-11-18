@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,12 @@ const ClientID = "opencode-cli"
 
 // ErrNoCredential means no credential file exists, so a device login is needed.
 var ErrNoCredential = fmt.Errorf("no opencode-console credential found")
+
+// ErrConcurrentRefresh means the refresh token was rejected but the credential
+// file was not updated by whoever rejected it, so another process may be
+// mid-refresh. Starting a device login in that state would overwrite a
+// credential that is still perfectly good.
+var ErrConcurrentRefresh = errors.New("console session refresh lost a race with another process")
 
 // Store reads and writes the credential file.
 type Store struct {
