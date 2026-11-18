@@ -131,13 +131,15 @@ func (c *Client) refreshLocked() error {
 		}
 		return err
 	}
-	// Persist before any use: the old refresh token is now dead.
+	// Persist before any use: the old refresh token is now dead. There is no
+	// cross-process lock here, so a concurrent refresher can still lose the race
+	// and receive invalid_grant; that case is recovered below and by the caller.
+	// What this does NOT do is detect a rotation that happened between our read
+	// and our write - only invalid_grant reveals that, so there is no comparison
+	// to perform on the success path.
 	if err := c.Store.Save(fresh); err != nil {
 		return err
 	}
-	// If the token on disk changed between our read and our write, another
-	// process rotated it and our fresh token is already stale. Prefer the
-	// on-disk credential so we do not strand the other process.
 	c.cred = fresh
 	return nil
 }

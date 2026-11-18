@@ -67,9 +67,20 @@ func (s *Store) loadLocked() (Credential, error) {
 
 // Save writes c back into the credential file, preserving every key it does not
 // model. The write is atomic (temp file + rename) and mode 0600.
+//
+// If nothing has been loaded yet, the existing file is read first. That matters:
+// the device-login path builds a fresh Store and saves into it, and without this
+// the merge would start from an empty document and silently drop every field
+// belonging to other tools sharing the credential (orgID, email, accountID and
+// anything unknown).
 func (s *Store) Save(c Credential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.raw == nil {
+		if _, err := s.loadLocked(); err != nil && !errors.Is(err, ErrNoCredential) {
+			return fmt.Errorf("read existing credential before save: %w", err)
+		}
+	}
 	return s.saveLocked(c)
 }
 

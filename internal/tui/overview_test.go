@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/cydnirn/opencode-limits/internal/budget"
 	"github.com/cydnirn/opencode-limits/internal/console"
 )
@@ -347,9 +349,12 @@ func TestRenderModelBudgetTableOverAllocated(t *testing.T) {
 			notWant: "over-allocated",
 		},
 		{
-			name:   "three allocations exceed the window limit",
+			// overAllocations() declares 3 x $25 = $75 monthly against a $60
+			// monthly limit, so the monthly over-allocation is $15. The summary
+			// must state monthly figures because that is what its label says.
+			name:   "three allocations exceed the monthly limit",
 			allocs: overAllocations(),
-			want:   "over-allocated by $3.00",
+			want:   "over-allocated by $15.00",
 		},
 	}
 
@@ -363,9 +368,10 @@ func TestRenderModelBudgetTableOverAllocated(t *testing.T) {
 			if tt.notWant != "" && strings.Contains(out, tt.notWant) {
 				t.Errorf("unexpected %q:\n%s", tt.notWant, out)
 			}
-			// The allocation total is always stated, warning or not.
-			if !strings.Contains(out, "allocated of $12.00 monthly plan budget") {
-				t.Errorf("missing allocation summary:\n%s", out)
+			// The allocation total is always stated, warning or not — and it
+			// must be the monthly figure, matching the label.
+			if !strings.Contains(out, "allocated of $60.00 monthly plan budget") {
+				t.Errorf("missing monthly allocation summary:\n%s", out)
 			}
 		})
 	}
@@ -600,5 +606,110 @@ func TestFirstLine(t *testing.T) {
 				t.Errorf("firstLine(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// The summary line says "monthly plan budget", so its figures must be monthly.
+// It previously printed the focused 5-hour window's totals, reporting
+// "$87.60 allocated of $12.00 monthly plan budget" against a $60 monthly limit.
+func TestAllocationSummaryUsesMonthlyFigures(t *testing.T) {
+	app := NewApp(Loader{}, time.Minute, 70, 95)
+	app.snap = longFixture(nil)
+	app.width, app.height = 120, 40
+	app.screen = ScreenOverview
+
+	out := stripANSI(app.renderBody())
+	monthly := app.snap.Window(budget.Month)
+
+	wantAlloc := budget.FormatUSD(monthly.AllocatedTotal)
+	wantLimit := budget.FormatUSD(monthly.Meter.LimitMicroCents)
+	var line string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "monthly plan budget") {
+			line = ln
+			break
+		}
+	}
+	if line == "" {
+		t.Fatal("no allocation summary line found")
+	}
+	if !strings.Contains(line, wantLimit) {
+		t.Errorf("summary must show the monthly limit %s, got %q", wantLimit, strings.TrimSpace(line))
+	}
+	if !strings.Contains(line, wantAlloc) {
+		t.Errorf("summary must show the monthly allocation total %s, got %q", wantAlloc, strings.TrimSpace(line))
+	}
+	// The 5-hour limit must not appear on a line that claims to be monthly.
+	five := app.snap.Window(budget.FiveHour)
+	if five.Meter.LimitMicroCents != monthly.Meter.LimitMicroCents {
+		if strings.Contains(line, budget.FormatUSD(five.Meter.LimitMicroCents)) {
+			t.Errorf("summary shows the 5-hour limit under a monthly label: %q", strings.TrimSpace(line))
+		}
+	}
+}
+
+// The meter block used to have a hard 72-cell minimum and overflowed anything
+// narrower, wrapping destructively on the primary screen.
+func TestMeterBlockFitsNarrowWidths(t *testing.T) {
+	app := NewApp(Loader{}, time.Minute, 70, 95)
+	app.snap = longFixture(nil)
+	app.height = 40
+	app.screen = ScreenOverview
+
+	for _, w := range []int{40, 50, 60, 70, 79, 80, 100, 120} {
+		app.width = w
+		for i, ln := range strings.Split(app.renderBody(), "\n") {
+			if got := lipgloss.Width(stripANSI(ln)); got > w {
+				t.Errorf("width %d: line %d is %d columns: %q", w, i, got, stripANSI(ln))
+			}
+		}
+	}
+}
+
+// The legend promises that projections are marked with ~, so a row that shows a
+// burn-rate estimate must actually carry the mark.
+func TestProjectionIsMarkedWithTilde(t *testing.T) {
+	app := NewApp(Loader{}, time.Minute, 70, 95)
+	// The base fixture gives Claude Haiku a bounded ETA (~13m), which is the
+	// cell that must carry the mark.
+	app.snap = newFixture(baseAllocations())
+	app.width, app.height = 130, 40
+	app.screen = ScreenOverview
+
+	out := stripANSI(app.renderBody())
+	// The row for the model with a bounded ETA must carry a tilde in its
+	// countdown cell, e.g. "... 7.5%  ~13m".
+	marked := false
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "Claude Haiku") {
+			continue
+		}
+		if strings.Contains(ln, "~") {
+			marked = true
+		}
+	}
+	if strings.Contains(out, "projected from burn rate") && !marked {
+		t.Errorf("legend claims ~ marks projections, but no ETA cell is marked:\n%s", out)
+	}
+}
+
+// Pathological terminal widths must truncate, not panic.
+func TestTinyWidthsDoNotPanic(t *testing.T) {
+	app := NewApp(Loader{}, time.Minute, 70, 95)
+	app.snap = longFixture(nil)
+	app.height = 20
+	for _, w := range []int{1, 2, 3, 5, 10, 19, 39} {
+		app.width = w
+		for _, scr := range []Screen{ScreenOverview, ScreenModels, ScreenPricing, ScreenTrend} {
+			app.screen = scr
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("panic at width %d screen %v: %v", w, scr, r)
+					}
+				}()
+				_ = app.View()
+			}()
+		}
 	}
 }

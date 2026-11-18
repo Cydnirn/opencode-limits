@@ -3,9 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -51,8 +53,9 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	// Report unknown keys: a typo in a model ID silently loses an allocation,
-	// which is exactly the failure this tool exists to prevent.
+	// Report unknown top-level keys. Note this does NOT catch a typo'd model ID:
+	// [allocations] decodes into a map, so any key is valid TOML. Unknown model
+	// IDs are validated against the live catalog instead (see CheckAllocations).
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
 		for _, k := range undecoded {
@@ -158,4 +161,34 @@ func WriteFileAtomic(path string, b []byte) error {
 		return fmt.Errorf("rename temp file to %s: %w", path, err)
 	}
 	return nil
+}
+
+// CheckAllocations reports allocation keys that do not correspond to a known
+// model, and non-positive values, which would otherwise be dropped silently.
+//
+// A typo'd model ID is valid TOML — [allocations] is a map — so it loads without
+// complaint and then never appears in any table: exactly the surprise this tool
+// exists to prevent. Callers pass the model IDs the plan actually exposes.
+func CheckAllocations(cfg Config, known []string) []string {
+	valid := make(map[string]bool, len(known))
+	for _, id := range known {
+		valid[id] = true
+	}
+	var problems []string
+	for id, usd := range cfg.Allocations {
+		if !valid[id] {
+			problems = append(problems, "unknown model ID: "+id)
+			continue
+		}
+		if math.IsNaN(usd) || math.IsInf(usd, 0) {
+			problems = append(problems, "allocation for "+id+" is not a finite number")
+			continue
+		}
+		if usd < 0 {
+			problems = append(problems, "allocation for "+id+" is negative ("+
+				strconv.FormatFloat(usd, 'f', -1, 64)+")")
+		}
+	}
+	sort.Strings(problems)
+	return problems
 }

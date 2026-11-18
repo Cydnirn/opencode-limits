@@ -199,6 +199,20 @@ func (a App) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// minWidth is the narrowest terminal the renderers are expected to handle. Below
+// this the column arithmetic produces negative repeat counts and panics, so all
+// renderers work against at least this width and the result is clipped. A
+// deliberately-tiny terminal gets truncated output instead of a crash.
+const minWidth = 40
+
+// renderWidth is the width renderers should lay out against.
+func (a App) renderWidth() int {
+	if a.width < minWidth {
+		return minWidth
+	}
+	return a.width
+}
+
 // bodyHeight is the number of lines available to screen content, after
 // reserving one line each for the tab bar and the key hints.
 func (a App) bodyHeight() int {
@@ -213,13 +227,13 @@ func (a App) bodyHeight() int {
 func (a App) renderBody() string {
 	switch a.screen {
 	case ScreenOverview:
-		return renderOverview(a.theme, a.snap, a.width, a.warning, a.danger)
+		return renderOverview(a.theme, a.snap, a.renderWidth(), a.warning, a.danger)
 	case ScreenModels:
-		return renderModels(a.theme, a.snap, a.width, a.sortMode, a.warning, a.danger)
+		return renderModels(a.theme, a.snap, a.renderWidth(), a.sortMode, a.warning, a.danger)
 	case ScreenPricing:
-		return renderPricing(a.theme, a.snap, a.width, a.warning, a.danger)
+		return renderPricing(a.theme, a.snap, a.renderWidth(), a.warning, a.danger)
 	case ScreenTrend:
-		return renderTrend(a.theme, a.snap, a.width, a.bodyHeight(), a.warning, a.danger)
+		return renderTrend(a.theme, a.snap, a.renderWidth(), a.bodyHeight(), a.warning, a.danger)
 	}
 	return ""
 }
@@ -491,9 +505,21 @@ func renderOnce(snap Snapshot) string {
 		}
 		fmt.Fprintf(&b, "  unattributed: %s (%.0f%% of window spend)\n",
 			budget.FormatUSD(v.Unattributed), v.UnattributedPercent)
+		// State the scope: the figure is scaled into this window, not monthly.
+		fmt.Fprintf(&b, "  allocated %s of %s in this window\n",
+			budget.FormatUSD(v.AllocatedTotal), budget.FormatUSD(v.Meter.LimitMicroCents))
 		if v.OverAllocated > 0 {
-			fmt.Fprintf(&b, "  over-allocated by %s\n", budget.FormatUSD(v.OverAllocated))
+			fmt.Fprintf(&b, "  over-allocated by %s in this window\n", budget.FormatUSD(v.OverAllocated))
 		}
+	}
+
+	// The monthly commitment is the number the operator actually decides, so it
+	// gets its own unambiguous line rather than being inferred from a window.
+	monthly := snap.Window(budget.Month)
+	fmt.Fprintf(&b, "\nMONTHLY COMMITMENT\n  %s allocated of %s plan\n",
+		budget.FormatUSD(monthly.AllocatedTotal), budget.FormatUSD(monthly.Meter.LimitMicroCents))
+	if monthly.OverAllocated > 0 {
+		fmt.Fprintf(&b, "  over-allocated by %s\n", budget.FormatUSD(monthly.OverAllocated))
 	}
 
 	if snap.Err != nil {

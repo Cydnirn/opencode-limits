@@ -63,9 +63,38 @@ func (m MicroCents) USD() float64 { return float64(m) / MicroCentsPerUSD }
 // String renders the value as a dollar amount.
 func (m MicroCents) String() string { return fmt.Sprintf("$%.2f", m.USD()) }
 
+// MaxMicroCents bounds the currency type: about 92 billion USD, well beyond any
+// real spend and safely inside int64.
+const MaxMicroCents = MicroCents(math.MaxInt64)
+
 // FromUSD converts dollars to microCents, rounding half away from zero so
 // negative values survive a round trip (int64 truncation would skew them).
-func FromUSD(usd float64) MicroCents { return MicroCents(math.Round(usd * MicroCentsPerUSD)) }
+//
+// Non-finite and out-of-range inputs saturate instead of wrapping to MinInt64,
+// which would otherwise render as -$92,233,720,368.55 on a single absurd config
+// value. CheckFinite USD separately when the input is user-supplied, so a typo
+// is reported rather than silently clamped.
+func FromUSD(usd float64) MicroCents {
+	if math.IsNaN(usd) || math.IsInf(usd, 0) {
+		return 0
+	}
+	v := math.Round(usd * MicroCentsPerUSD)
+	if v > float64(math.MaxInt64) {
+		return MaxMicroCents
+	}
+	if v < float64(math.MinInt64) {
+		return MicroCents(math.MinInt64)
+	}
+	return MicroCents(v)
+}
+
+// IsFiniteUSD reports whether usd is usable as a currency amount.
+func IsFiniteUSD(usd float64) bool {
+	if math.IsNaN(usd) || math.IsInf(usd, 0) {
+		return false
+	}
+	return math.Abs(usd) <= float64(math.MaxInt64)/MicroCentsPerUSD
+}
 
 // Percent returns used/limit as a percentage, and false when the limit is zero.
 func (m Meter) Percent() (float64, bool) {

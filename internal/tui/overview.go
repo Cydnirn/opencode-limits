@@ -38,16 +38,29 @@ func renderMeters(t Theme, s Snapshot, width int, warning, danger int) string {
 	}
 
 	// One row per window: label, bar, percent, used/limit, reset countdown.
+	// Fixed parts total 62 cells, so below ~80 columns the row cannot fit; drop
+	// the reset column first and then the amount column rather than overflowing,
+	// which would wrap and destroy the layout.
 	labelW := 14
 	pctW := 6
 	amtW := 22
 	resetW := 16
-	barW := width - labelW - pctW - amtW - resetW - 4
+	const fixedOverhead = 4
+	showAmount := width >= 62+fixedOverhead+8
+	showReset := width >= 62+8+fixedOverhead
 
-	var b strings.Builder
+	barW := width - labelW - pctW - fixedOverhead
+	if showAmount {
+		barW -= amtW
+	}
+	if showReset {
+		barW -= resetW
+	}
 	if barW < 8 {
 		barW = 8
 	}
+
+	var b strings.Builder
 	for _, v := range views {
 		m := v.Meter
 		pct, ok := m.Percent()
@@ -81,9 +94,13 @@ func renderMeters(t Theme, s Snapshot, width int, warning, danger int) string {
 		b.WriteString(renderBar(t, barFrac, barW, warning, danger))
 		b.WriteString(" ")
 		b.WriteString(tone.Render(padLeft(pctText, pctW)))
-		b.WriteString(" ")
-		b.WriteString(padRight(amt, amtW))
-		b.WriteString(t.Dim.Render(reset))
+		if showAmount {
+			b.WriteString(" ")
+			b.WriteString(padRight(amt, amtW))
+		}
+		if showReset {
+			b.WriteString(t.Dim.Render(reset))
+		}
 		b.WriteString("\n")
 	}
 
@@ -97,7 +114,7 @@ func renderMeters(t Theme, s Snapshot, width int, warning, danger int) string {
 		b.WriteString(t.Dim.Render(line))
 		b.WriteString("\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return clipLines(strings.TrimRight(b.String(), "\n"), width)
 }
 
 // windowLabel returns the gauge label for a window.
@@ -260,7 +277,9 @@ func renderModelBudgetTable(t Theme, s Snapshot, width int, warning, danger int)
 			case m.ETAExceedsWindow:
 				etaText = t.Dim.Render("resets first")
 			case m.ETA > 0:
-				etaText = t.Warn.Render("in " + budget.FormatDuration(m.ETA))
+				// The tilde is the marker the legend below refers to: this number
+				// is extrapolated from burn rate, not reported by the API.
+				etaText = t.Warn.Render("~" + budget.FormatDuration(m.ETA))
 			}
 		}
 
@@ -312,10 +331,15 @@ func renderModelBudgetTable(t Theme, s Snapshot, width int, warning, danger int)
 	// Allocated vs plan limit, so over-allocation is obvious. Each half is
 	// written separately so the warning keeps its bad tone while still
 	// wrapping inside the terminal.
+	// The label says monthly, so the figures must be monthly. `w` is the focused
+	// window (the 5-hour one), whose AllocatedTotal and limit are window-scale;
+	// printing those under a monthly label reported $7.00 "of $12.00 monthly"
+	// when the monthly limit is $60.
+	monthly := s.Window(budget.Month)
 	writeWrapped(&b, fmt.Sprintf("%s allocated of %s monthly plan budget",
-		budget.FormatUSD(w.AllocatedTotal), budget.FormatUSD(w.Meter.LimitMicroCents)), "  ", width)
-	if w.OverAllocated > 0 {
-		writeWrapped(&b, fmt.Sprintf("over-allocated by %s", budget.FormatUSD(w.OverAllocated)), "  ", width)
+		budget.FormatUSD(monthly.AllocatedTotal), budget.FormatUSD(monthly.Meter.LimitMicroCents)), "  ", width)
+	if monthly.OverAllocated > 0 {
+		writeWrapped(&b, fmt.Sprintf("over-allocated by %s", budget.FormatUSD(monthly.OverAllocated)), "  ", width)
 	}
 	// Anything marked with ~ is a projection from burn rate, not a measured
 	// value reported by the API. Say so rather than letting the two blur.

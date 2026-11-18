@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/cydnirn/opencode-limits/internal/budget"
 	"github.com/cydnirn/opencode-limits/internal/config"
 	"github.com/cydnirn/opencode-limits/internal/console"
 	"github.com/cydnirn/opencode-limits/internal/tui"
@@ -115,6 +116,35 @@ func run() error {
 			} else {
 				return err
 			}
+		}
+	}
+
+	// Warn about allocation keys that cannot match a real model, and about
+	// non-positive or non-finite values. These would otherwise vanish without a
+	// trace, which is the failure mode this tool exists to prevent.
+	if known, kerr := client.SubscriptionModels(); kerr == nil {
+		ids := make([]string, 0, len(known))
+		for _, m := range known {
+			ids = append(ids, m.ID)
+		}
+		// Models seen in usage are valid too: a model can be used without being
+		// in the current plan list.
+		if st, serr := client.GoStatus(); serr == nil && st.Access != nil {
+			for _, w := range budget.All() {
+				meter := budget.MeterOf(st.Access.Meters, w)
+				since := meter.StartsAt
+				if since.IsZero() {
+					since = st.Access.StartsAt
+				}
+				if rows, uerr := client.UsageSince(since); uerr == nil {
+					for _, r := range rows {
+						ids = append(ids, r.Model)
+					}
+				}
+			}
+		}
+		for _, problem := range config.CheckAllocations(cfg, ids) {
+			fmt.Fprintf(os.Stderr, "config %s: %s\n", paths.ConfigFile, problem)
 		}
 	}
 

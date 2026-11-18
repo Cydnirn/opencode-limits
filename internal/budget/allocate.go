@@ -435,9 +435,20 @@ func FormatDuration(d time.Duration) string {
 
 // FormatPercent renders a percentage with one decimal below 10 and none above,
 // which keeps table columns narrow without losing meaning.
+//
+// Values at or above 100 keep their magnitude up to 999%; clamping everything to
+// "100%" hid real overspend (the live 5-hour meter hit 875% of its limit while
+// rendering as "100%"). Beyond 999% the exact figure matters less than the fact
+// that it is wildly over, so it saturates.
 func FormatPercent(p float64) string {
+	if math.IsNaN(p) {
+		return "--"
+	}
+	if p >= 1000 {
+		return "999%+"
+	}
 	if p >= 100 {
-		return "100%"
+		return Itoa(int64(math.Round(p))) + "%"
 	}
 	if p < 0 {
 		p = 0

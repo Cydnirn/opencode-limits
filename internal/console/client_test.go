@@ -614,3 +614,61 @@ func TestUsageSinceSinglePageOneRequest(t *testing.T) {
 		t.Errorf("made %d requests for a single page, want 1", got)
 	}
 }
+
+// The device-login path saves into a Store that was never loaded. Save must
+// therefore read the existing file itself, or the merge starts from an empty
+// document and drops every field belonging to other tools that share this
+// credential. This was a real data-loss bug: --login rewrote the file to just
+// the nine modelled keys.
+func TestSaveWithoutLoadPreservesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential.json")
+	original := `{"type":"oauth","server":"https://x","access":"old","refresh":"oldr",
+	  "expires":1,"accountID":"u1","email":"e@x","orgID":"o1","orgName":"Personal",
+	  "foreignKey":"keep","anotherForeign":{"nested":true}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately do NOT Load first: this mirrors deviceLogin.
+	store := &Store{Path: path}
+	if err := store.Save(Credential{
+		Type: "oauth", Server: "https://x", Access: "new", Refresh: "newr", Expires: 456,
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["foreignKey"] != "keep" {
+		t.Errorf("foreignKey lost: %v", doc["foreignKey"])
+	}
+	if _, ok := doc["anotherForeign"]; !ok {
+		t.Error("nested foreign key lost")
+	}
+	// The fields the credential carries must be updated, not left stale.
+	if doc["access"] != "new" || doc["refresh"] != "newr" {
+		t.Errorf("tokens not updated: access=%v refresh=%v", doc["access"], doc["refresh"])
+	}
+}
+
+// Saving into a path that does not exist yet must still work.
+func TestSaveCreatesFileWhenNoneExists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "credential.json")
+	store := &Store{Path: path}
+	if err := store.Save(Credential{Type: "oauth", Access: "a", Refresh: "r"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Access != "a" {
+		t.Errorf("access = %q", got.Access)
+	}
+}

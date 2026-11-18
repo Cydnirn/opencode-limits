@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,5 +189,88 @@ func TestWriteFileAtomicReplacesExisting(t *testing.T) {
 		if e.Name() != "x.txt" {
 			t.Errorf("leftover file: %s", e.Name())
 		}
+	}
+}
+
+// A typo'd model ID is valid TOML, so Load accepts it and the allocation then
+// vanishes from every view. CheckAllocations is what catches it against the
+// live model list.
+func TestCheckAllocationsCatchesTypos(t *testing.T) {
+	known := []string{"gpt-6-luna", "deepseek-v4.1-flash", "glm-5.3"}
+	tests := []struct {
+		name   string
+		allocs map[string]float64
+		want   int
+		substr string
+	}{
+		{
+			name:   "all valid",
+			allocs: map[string]float64{"gpt-6-luna": 15, "glm-5.3": 200},
+			want:   0,
+		},
+		{
+			name:   "typo'd model ID",
+			allocs: map[string]float64{"gpt-6-luma": 15},
+			want:   1,
+			substr: "unknown model ID: gpt-6-luma",
+		},
+		{
+			name:   "negative allocation",
+			allocs: map[string]float64{"glm-5.3": -15},
+			want:   1,
+			substr: "negative",
+		},
+		{
+			name:   "barely negative",
+			allocs: map[string]float64{"glm-5.3": -0.01},
+			want:   1,
+			substr: "negative",
+		},
+		{
+			name:   "zero is allowed, meaning unallocated",
+			allocs: map[string]float64{"glm-5.3": 0},
+			want:   0,
+		},
+		{
+			name:   "two problems",
+			allocs: map[string]float64{"nope": 5, "glm-5.3": -1},
+			want:   2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := CheckAllocations(Config{Allocations: tt.allocs}, known)
+			if len(got) != tt.want {
+				t.Fatalf("got %d problems (%v), want %d", len(got), got, tt.want)
+			}
+			if tt.substr != "" {
+				found := false
+				for _, p := range got {
+					if strings.Contains(p, tt.substr) {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("no problem mentions %q: %v", tt.substr, got)
+				}
+			}
+		})
+	}
+}
+
+// A typo the old Undecoded() check could never catch must load cleanly, proving
+// CheckAllocations is load-bearing rather than redundant.
+func TestLoadAcceptsTypoSoCheckIsRequired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[allocations]\n\"anthropic/claude-sonet-4\" = 15\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load must accept any allocation key: %v", err)
+	}
+	if len(CheckAllocations(cfg, []string{"claude-sonnet-4"})) == 0 {
+		t.Error("expected CheckAllocations to flag the typo")
 	}
 }

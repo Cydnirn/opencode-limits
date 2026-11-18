@@ -1,6 +1,7 @@
 package budget
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -346,4 +347,31 @@ func findWindow(views []WindowView, w Window) WindowView {
 		}
 	}
 	return WindowView{}
+}
+
+// A meter at 875% of its limit is the live shape when a 5-hour window is
+// overspent; rendering it as "100%" hid how bad it was.
+func TestFormatPercentReportsOverspend(t *testing.T) {
+	tests := []struct {
+		name string
+		in   float64
+		want string
+	}{
+		{name: "under ten keeps a decimal", in: 8.25, want: "8.3%"},
+		{name: "tens round", in: 55.4, want: "55%"},
+		{name: "exactly one hundred is not clamped", in: 100, want: "100%"},
+		{name: "live overspend case", in: 875.75, want: "876%"},
+		{name: "monthly overspend", in: 103.3, want: "103%"},
+		{name: "saturates when enormous", in: 5000, want: "999%+"},
+		{name: "negative floors at zero", in: -5, want: "0.0%"},
+		{name: "NaN is not a number", in: math.NaN(), want: "--"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := FormatPercent(tt.in); got != tt.want {
+				t.Errorf("FormatPercent(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
