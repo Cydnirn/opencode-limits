@@ -38,6 +38,49 @@ env:
   CGO_ENABLED: "0"
 
 jobs:
+  # Resolve the version once so build and release agree. On a tag push it is the
+  # tag; on a manual dispatch it is the requested tag, so a rebuilt release keeps
+  # the same asset names instead of inventing SHA-named duplicates.
+  version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - name: Resolve
+        id: v
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=""
+          release="false"
+
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_TAG" ]; then
+            version="$INPUT_TAG"
+            release="true"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            version="$REF_NAME"
+            release="true"
+          else
+            # A branch build is a snapshot, not a release.
+            version="0.0.0-${GITHUB_SHA::7}"
+          fi
+
+          case "$version" in
+            v*|0.0.0-*) ;;
+            *) echo "::error::version '$version' must start with v"; exit 1 ;;
+          esac
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$version release=$release"
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -79,7 +122,7 @@ jobs:
 
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: test
+    needs: [version, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -106,13 +149,9 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          # Stamp the binary with the version it was built from. On a tag that is
-          # the tag; otherwise the short SHA.
-          version="${GITHUB_REF_NAME}"
-          case "$version" in
-            v*) ;;
-            *) version="0.0.0-${GITHUB_SHA::7}" ;;
-          esac
+          # Version comes from the resolve job so a tag rebuild keeps the same
+          # asset names rather than producing SHA-named duplicates.
+          version="${{ needs.version.outputs.version }}"
 
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
@@ -150,31 +189,16 @@ jobs:
 
   release:
     name: publish release
-    needs: build
-    # Only on a tag push, or a manual run that names a tag.
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    needs: [version, build]
+    # Only when the version job decided this is a release (tag push or a dispatch
+    # naming a tag). A branch build stops after uploading artifacts.
+    if: needs.version.outputs.release == 'true' 
     runs-on: ubuntu-latest
     permissions:
       # Required to create a release and upload assets.
       contents: write
     steps:
       - uses: actions/checkout@v7
-
-      - name: Resolve tag
-        id: tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          fi
-          case "$tag" in
-            v*) ;;
-            *) echo "::error::tag '$tag' must start with v"; exit 1 ;;
-          esac
-          echo "name=$tag" >> "$GITHUB_OUTPUT"
-          echo "Releasing $tag"
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v8
@@ -210,8 +234,8 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.version }}
           generate_release_notes: true
           # Re-running must update in place rather than fail on an existing release.
           fail_on_unmatched_files: true
@@ -224,7 +248,7 @@ jobs:
             Verify a download with the matching `.sha256` file:
 
             ```bash
-            sha256sum -c opencode-limits_${{ steps.tag.outputs.name }}_linux_amd64.sha256
+            sha256sum -c opencode-limits_${{ needs.version.outputs.version }}_linux_amd64.sha256
             ```
 
-            Install with Go instead: `go install github.com/Cydnirn/opencode-limits/cmd/opencode-limits@${{ steps.tag.outputs.name }}`
+            Install with Go instead: `go install github.com/Cydnirn/opencode-limits/cmd/opencode-limits@${{ needs.version.outputs.version }}`
