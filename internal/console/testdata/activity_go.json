@@ -1,0 +1,24 @@
+{
+  "startsAt": "2026-11-16T18:09:18.000Z",
+  "daily": [
+    {
+      "date": "2026-11-16",
+      "totalCostMicroCents": "128146422",
+      "totalTokens": "5271635",
+      "totalRequests": "28"
+    },
+    {
+      "date": "2026-11-17",
+      "totalCostMicroCents": "446014192",
+      "totalTokens": "237241356",
+      "totalRequests": "1865"
+    }
+  ],
+  "models": [
+    {
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "totalRequests": "1501"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local editor/OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

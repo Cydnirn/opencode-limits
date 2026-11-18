@@ -1,0 +1,30 @@
+{
+  "subscriberUserId": "user_01M7G87PCAMEMG1WG5RQHX69DS",
+  "product": "go",
+  "renewalProduct": "go",
+  "useBalance": false,
+  "access": {
+    "startsAt": "2026-11-16T18:09:18.000Z",
+    "endsAt": "2026-12-16T18:09:18.000Z",
+    "cancelAtPeriodEnd": false,
+    "meters": {
+      "fiveHour": {
+        "startsAt": "2026-11-18T06:59:21.000Z",
+        "resetsAt": "2026-11-18T11:59:21.000Z",
+        "limitMicroCents": "1200000000",
+        "usedMicroCents": "101480253"
+      },
+      "week": {
+        "startsAt": "2026-11-16T00:00:00.000Z",
+        "resetsAt": "2026-11-23T00:00:00.000Z",
+        "limitMicroCents": "3000000000",
+        "usedMicroCents": "1666042828"
+      },
+      "month": {
+        "resetsAt": "2026-12-16T18:09:18.000Z",
+        "limitMicroCents": "6000000000",
+        "usedMicroCents": "1666042828"
+      }
+    }
+  }
+}

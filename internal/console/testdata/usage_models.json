@@ -1,0 +1,34 @@
+{
+  "items": [
+    {
+      "model": "gpt-6-luna",
+      "provider": "opencode-go",
+      "subscription": false,
+      "totalRequests": "831",
+      "totalInputTokens": "65050",
+      "totalOutputTokens": "589013",
+      "totalCacheReadTokens": "144102919",
+      "totalCacheWrite5mTokens": "3622920",
+      "totalCacheWrite1hTokens": "0",
+      "totalCostMicroCents": "307223321"
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "provider": "opencode-go",
+      "subscription": false,
+      "totalRequests": "1519",
+      "totalInputTokens": "2999201",
+      "totalOutputTokens": "2319634",
+      "totalCacheReadTokens": "131413248",
+      "totalCacheWrite5mTokens": "0",
+      "totalCacheWrite1hTokens": "0",
+      "totalCostMicroCents": "305796761"
+    }
+  ],
+  "pageInfo": {
+    "page": 1,
+    "pageSize": 10,
+    "total": 2,
+    "pageCount": 1
+  }
+}
