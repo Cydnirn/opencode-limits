@@ -27,7 +27,13 @@ import (
 )
 
 // version is stamped at build time via -ldflags.
-var version = "dev"
+// Stamped at build time via -ldflags -X. Keep all three declared, otherwise a
+// -X for an undeclared symbol is silently ignored and the binary reports "dev".
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -52,7 +58,10 @@ func run() error {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("opencode-limits " + version)
+		fmt.Printf("opencode-limits %s\n", version)
+		if commit != "none" || buildDate != "unknown" {
+			fmt.Printf("  commit:  %s\n  built:   %s\n", commit, buildDate)
+		}
 		return nil
 	}
 

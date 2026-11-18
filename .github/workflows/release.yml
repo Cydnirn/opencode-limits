@@ -1,0 +1,227 @@
+# Build, test and publish opencode-limits.
+#
+# Three jobs:
+#   test     vet + race tests on Linux, macOS and Windows
+#   build    cross-compile all six targets and upload them as artifacts
+#   release  (tags only) attach those binaries to a GitHub Release
+#
+# Pushing a tag like v0.1.0 produces a published release with six binaries,
+# SHA-256 checksums and generated notes. The release job is idempotent: re-running
+# it updates the assets on an existing release rather than failing.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach binaries to (e.g. v0.1.0)"
+        required: false
+        type: string
+
+# Cancel superseded runs on the same ref, but never cancel a tag build: a release
+# must finish once started.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.24"
+  # Keep builds reproducible and free of cgo so the binaries are static.
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # The module cache is keyed on go.sum, so a dependency change busts it.
+          cache: true
+
+      - name: Verify formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (race)
+        # -race needs cgo, which is off globally for the release build.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...
+
+      - name: Build host binary
+        run: go build -trimpath -o /dev/null ./cmd/opencode-limits
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          # Stamp the binary with the version it was built from. On a tag that is
+          # the tag; otherwise the short SHA.
+          version="${GITHUB_REF_NAME}"
+          case "$version" in
+            v*) ;;
+            *) version="0.0.0-${GITHUB_SHA::7}" ;;
+          esac
+
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          out="dist/opencode-limits_${version}_${GOOS}_${GOARCH}${ext}"
+          mkdir -p dist
+
+          go build -trimpath \
+            -ldflags "-s -w \
+              -X main.version=${version} \
+              -X main.commit=${GITHUB_SHA} \
+              -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "$out" ./cmd/opencode-limits
+
+          # Prove the binary is the right format for the target before shipping it.
+          file "$out"
+          ls -l "$out"
+
+      - name: Checksum
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # sha256sum on Linux; shasum is the macOS spelling, but this runs on
+          # ubuntu-latest so sha256sum is present.
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          cat ./*.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-limits-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          # A failed upload must fail the job, not silently ship nothing.
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: publish release
+    needs: build
+    # Only on a tag push, or a manual run that names a tag.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to create a release and upload assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag '$tag' must start with v"; exit 1 ;;
+          esac
+          echo "name=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # Merge every artifact into one flat directory so the release carries
+          # all six binaries and their checksums together.
+          merge-multiple: true
+
+      - name: Verify the expected binaries exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist
+          missing=0
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
+            if ! ls dist/opencode-limits_*"$target"* >/dev/null 2>&1; then
+              echo "::error::missing binary for $target"
+              missing=1
+            fi
+            # Each binary must have a checksum beside it.
+            if ! ls dist/opencode-limits_*"$target"*.sha256 >/dev/null 2>&1; then
+              echo "::error::missing checksum for $target"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "All six targets present with checksums."
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          # Re-running must update in place rather than fail on an existing release.
+          fail_on_unmatched_files: true
+          files: |
+            dist/opencode-limits_*
+          body: |
+            Static binaries for Linux, macOS and Windows (amd64 + arm64).
+            No runtime dependencies — download, `chmod +x`, run.
+
+            Verify a download with the matching `.sha256` file:
+
+            ```bash
+            sha256sum -c opencode-limits_${{ steps.tag.outputs.name }}_linux_amd64.sha256
+            ```
+
+            Install with Go instead: `go install github.com/Cydnirn/opencode-limits/cmd/opencode-limits@${{ steps.tag.outputs.name }}`
