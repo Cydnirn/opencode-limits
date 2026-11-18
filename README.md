@@ -1,8 +1,7 @@
 # opencode-limits
 
 A TUI for OpenCode Go plans that shows **per-model spending and remaining budget**
-across the rolling 5-hour, weekly and monthly windows — the thing the Console's
-budgets page does not show.
+across the rolling 5-hour, weekly and monthly windows.
 
 The Console reports Go usage as three aggregate meters (`5-hour 25%`,
 `Weekly 55%`, `Monthly 27%`) and, separately, a per-model cost table scoped to a
@@ -10,13 +9,13 @@ date range. Nothing connects the two, and there is no per-model budget anywhere
 in the Console. So an expensive model quietly eats an allowance you meant for a
 cheap one and nothing warns you.
 
-`opencode-limits` closes that gap: you declare how you want to divide the plan
+In `opencode-limits` you declare how you want to divide the plan
 per model, and it shows each model's spend against that share, sorted so the
-model closest to running dry is at the top.
+model closest to running dry at the top.
 
 ## Install
 
-Requires Go 1.24 or newer. Nothing else — the build is pure Go with
+Requires Go 1.24 or newer. Tthe build is pure Go with
 `CGO_ENABLED=0`, so the result is a single static binary.
 
 ### Linux and macOS
@@ -48,7 +47,7 @@ make install PREFIX="C:/Tools"
 
 ### Without make
 
-Any platform, one command:
+Any platform:
 
 ```bash
 go build -o opencode-limits ./cmd/opencode-limits
@@ -85,8 +84,7 @@ They are static (`CGO_ENABLED=0`), so there is no runtime to install.
 ## First run
 
 The tool uses the OpenCode Console credential already on your machine, written by
-the `opencode-console` CLI. If `opencode` is signed in, this just works — no
-separate login.
+the `opencode-console` CLI. If `opencode` is signed in, this just works.
 
 ```bash
 opencode-limits            # the TUI
@@ -170,7 +168,7 @@ tell there is more below the fold.
 
 ## Reading the numbers
 
-- **The meter is the truth.** The plan's own meter is authoritative. Per-model
+- The plan's own meter is authoritative. Per-model
   costs come from a separate usage endpoint and their sum does not match the
   meter: rollups lag and the meter counts differently. Observed live, the
   5-hour meter read $105.09 while per-model costs summed to $174.95. Rather than
