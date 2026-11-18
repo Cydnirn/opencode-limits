@@ -542,3 +542,75 @@ func TestCatalogWithNumericPrices(t *testing.T) {
 		t.Error("beam-free should be free")
 	}
 }
+
+// A workspace with more models than one page must not be silently truncated:
+// missing rows understate spend and overstate every model's remaining budget.
+func TestUsageSinceFollowsPagination(t *testing.T) {
+	var pages atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/usage/models", func(w http.ResponseWriter, r *http.Request) {
+		pages.Add(1)
+		page := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "2":
+			fmt.Fprint(w, `{"items":[{"model":"second","totalRequests":"1","totalCostMicroCents":"200000000"}],
+			  "pageInfo":{"page":2,"pageSize":1,"total":2,"pageCount":2}}`)
+		default:
+			fmt.Fprint(w, `{"items":[{"model":"first","totalRequests":"1","totalCostMicroCents":"100000000"}],
+			  "pageInfo":{"page":1,"pageSize":1,"total":2,"pageCount":2}}`)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "credential.json")
+	writeCredential(t, credPath, Credential{
+		Server: srv.URL, Access: "tok",
+		Expires: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	c := NewClient(&Store{Path: credPath}, srv.URL)
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := c.UsageSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("UsageSince: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows across 2 pages, want 2", len(rows))
+	}
+	if rows[0].Model != "first" || rows[1].Model != "second" {
+		t.Errorf("rows = %q,%q", rows[0].Model, rows[1].Model)
+	}
+	if got := pages.Load(); got != 2 {
+		t.Errorf("fetched %d pages, want 2", got)
+	}
+}
+
+// A single-page response must not trigger a second request.
+func TestUsageSinceSinglePageOneRequest(t *testing.T) {
+	var calls atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/usage/models", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"items":[{"model":"only","totalRequests":"1","totalCostMicroCents":"1"}],
+		  "pageInfo":{"page":1,"pageSize":100,"total":1,"pageCount":1}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	credPath := filepath.Join(t.TempDir(), "credential.json")
+	writeCredential(t, credPath, Credential{Server: srv.URL, Access: "t", Expires: time.Now().Add(time.Hour).UnixMilli()})
+	c := NewClient(&Store{Path: credPath}, srv.URL)
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UsageSince(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("made %d requests for a single page, want 1", got)
+	}
+}

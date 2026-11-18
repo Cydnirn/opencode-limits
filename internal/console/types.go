@@ -191,7 +191,13 @@ type wireUsageRow struct {
 }
 
 type wireUsageResp struct {
-	Items []wireUsageRow `json:"items"`
+	Items    []wireUsageRow `json:"items"`
+	PageInfo struct {
+		Page      int `json:"page"`
+		PageSize  int `json:"pageSize"`
+		Total     int `json:"total"`
+		PageCount int `json:"pageCount"`
+	} `json:"pageInfo"`
 }
 
 type wireSubscriptionModels struct {

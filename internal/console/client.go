@@ -18,6 +18,13 @@ import (
 // userAgent identifies this tool to the Console API.
 const userAgent = "opencode-limits/0.1"
 
+const (
+	// usagePageSize is the per-page row count requested from the usage endpoint.
+	usagePageSize = 100
+	// usageMaxPages bounds pagination so a bad pageCount cannot spin forever.
+	usageMaxPages = 50
+)
+
 // Client talks to the OpenCode Console API.
 //
 // Requests carry the bearer access token and x-org-id header the API expects.
@@ -228,19 +235,28 @@ func (c *Client) UsageSince(since time.Time) ([]ModelUsage, error) {
 	if !since.IsZero() {
 		q.Set("since", since.UTC().Format(time.RFC3339))
 	}
-	q.Set("pageSize", "100")
+	q.Set("pageSize", strconv.Itoa(usagePageSize))
 
-	var w wireUsageResp
-	if err := c.do("/api/usage/models", q, &w); err != nil {
-		return nil, err
-	}
-	out := make([]ModelUsage, 0, len(w.Items))
-	for _, r := range w.Items {
-		mu, err := r.toModelUsage()
-		if err != nil {
-			return nil, fmt.Errorf("model %q: %w", r.Model, err)
+	// Follow pageInfo.pageCount rather than trusting a single page: a workspace
+	// with many models would otherwise be silently truncated, understating spend
+	// and overstating every model's remaining budget.
+	out := make([]ModelUsage, 0, usagePageSize)
+	for page := 1; page <= usageMaxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var w wireUsageResp
+		if err := c.do("/api/usage/models", q, &w); err != nil {
+			return nil, err
 		}
-		out = append(out, mu)
+		for _, r := range w.Items {
+			mu, err := r.toModelUsage()
+			if err != nil {
+				return nil, fmt.Errorf("model %q: %w", r.Model, err)
+			}
+			out = append(out, mu)
+		}
+		if w.PageInfo.PageCount <= 0 || page >= w.PageInfo.PageCount || len(w.Items) == 0 {
+			break
+		}
 	}
 	return out, nil
 }

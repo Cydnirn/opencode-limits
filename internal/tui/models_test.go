@@ -23,9 +23,18 @@ func TestRenderModelsBreakpoints(t *testing.T) {
 			notColumns:  []string{"CACHE-R", "CONTEXT"},
 		},
 		{
-			name:        "wide shows token classes",
+			// The full set including CACHE-W needs 127 columns; 120 is not
+			// enough, so token classes drop. This case used to assert the
+			// opposite because a hardcoded breakpoint let the table overflow.
+			name:        "wide but not wide enough still drops tokens",
 			width:       120,
-			wantColumns: []string{"MODEL", "REQS", "INPUT", "OUTPUT", "CACHE-R", "COST", "$/1M", "LEFT(MO)", "CONTEXT"},
+			wantColumns: []string{"MODEL", "REQS", "COST", "$/1M", "LEFT(MO)"},
+			notColumns:  []string{"CACHE-R", "CONTEXT"},
+		},
+		{
+			name:        "very wide shows every column",
+			width:       140,
+			wantColumns: []string{"MODEL", "REQS", "INPUT", "OUTPUT", "CACHE-R", "CACHE-W", "COST", "$/1M", "LEFT(MO)", "CONTEXT"},
 		},
 	}
 

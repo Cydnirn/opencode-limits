@@ -111,13 +111,20 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 		padLeft("INPUT", tokW),
 		padLeft("OUTPUT", tokW),
 		padLeft("CACHE-R", tokW),
+		padLeft("CACHE-W", tokW),
 		padLeft("COST", costW),
 		padLeft("$/1M", costW),
 		padLeft("LEFT(MO)", leftW),
 		padLeft("%PLAN", 6),
 		padLeft("CONTEXT", ctxW),
 	}
-	if width < 110 {
+	// wideWidth is what the full column set actually needs. Computing it beats a
+	// hardcoded breakpoint: adding a column without updating the constant silently
+	// overflows the terminal, which is exactly how the CACHE-W column overflowed
+	// at 120 before this was derived.
+	wideWidth := 2 + modelW + numW + tokW*4 + costW*2 + leftW + 6 + ctxW + gap*10
+	showTokens := width >= wideWidth
+	if !showTokens {
 		// Drop the token-class columns before dropping model names or money.
 		header = []string{
 			padRight("MODEL", modelW),
@@ -133,7 +140,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 
 	for _, r := range list {
 		cells := []string{padRight(r.name, modelW)}
-		if width < 110 {
+		if !showTokens {
 			cells = append(cells,
 				padLeft(budget.Itoa(r.usage.Requests), numW),
 				padLeft(budget.FormatUSD(r.usage.CostMicroCents), costW),
@@ -145,6 +152,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 				padLeft(budget.FormatTokens(r.usage.InputTokens), tokW),
 				padLeft(budget.FormatTokens(r.usage.OutputTokens), tokW),
 				padLeft(budget.FormatTokens(r.usage.CacheRead), tokW),
+				padLeft(budget.FormatTokens(r.usage.CacheWrite5m+r.usage.CacheWrite1h), tokW),
 				padLeft(budget.FormatUSD(r.usage.CostMicroCents), costW),
 				padLeft(ratePerM(r.usage), costW),
 			)
@@ -166,7 +174,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 		cells = append(cells, leftStyle.Render(padLeft(leftText, leftW)))
 		cells = append(cells, padLeft(budget.FormatPercent(r.monthly.PercentOfPlan), 6))
 
-		if width >= 110 {
+		if showTokens {
 			ctx := "--"
 			if cm, ok := s.Catalog[r.id]; ok && cm.ContextLimit > 0 {
 				ctx = budget.FormatTokens(cm.ContextLimit)
