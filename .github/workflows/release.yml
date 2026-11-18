@@ -46,9 +46,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           # The module cache is keyed on go.sum, so a dependency change busts it.
@@ -92,9 +92,9 @@ jobs:
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -140,7 +140,7 @@ jobs:
           for f in *; do sha256sum "$f" > "$f.sha256"; done
           cat ./*.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: opencode-limits-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
@@ -158,7 +158,7 @@ jobs:
       # Required to create a release and upload assets.
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve tag
         id: tag
@@ -177,7 +177,7 @@ jobs:
           echo "Releasing $tag"
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           # Merge every artifact into one flat directory so the release carries

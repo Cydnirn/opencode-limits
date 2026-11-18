@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -177,7 +178,10 @@ func TestWriteFileAtomicReplacesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	// Unix permission bits only mean something on Unix. Windows derives the mode
+	// from file attributes and reports 0666 for a normal writable file regardless
+	// of the chmod, so asserting 0600 there is testing the OS, not the code.
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %v, want 0600", st.Mode().Perm())
 	}
 	// No temp files left behind.
