@@ -56,13 +56,31 @@ go build -o opencode-limits ./cmd/opencode-limits
 
 ### Prebuilt binaries
 
-`make release` cross-compiles every supported target into `./dist`:
+Download from the [Releases page](https://github.com/Cydnirn/opencode-limits/releases):
+
+```bash
+# Linux / macOS — pick your platform from the release, then:
+chmod +x opencode-limits_v0.1.0_linux_amd64
+./opencode-limits_v0.1.0_linux_amd64
+```
 
 | OS | Architectures |
 |---|---|
 | Linux | amd64, arm64 |
 | macOS | amd64 (Intel), arm64 (Apple silicon) |
 | Windows | amd64, arm64 |
+
+Each binary ships with a `.sha256` beside it:
+
+```bash
+sha256sum -c opencode-limits_v0.1.0_linux_amd64.sha256
+```
+
+They are static (`CGO_ENABLED=0`), so there is no runtime to install.
+
+### Build it yourself
+
+`make release` cross-compiles every supported target into `./dist`.
 
 ## First run
 
