@@ -201,7 +201,7 @@ func renderModels(t Theme, s Snapshot, width int, mode sortMode, warning, danger
 
 	b.WriteString("\n")
 	writeWrapped(&b, fmt.Sprintf(
-		"token and cost columns are for the %s window; LEFT/%%PLAN are monthly allocations",
+		"token and cost columns are for the %s window; LEFT is the plan's monthly cap for that model",
 		focus.String()), "  ", width)
 	return b.String()
 }

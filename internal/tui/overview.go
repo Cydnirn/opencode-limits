@@ -331,13 +331,19 @@ func renderModelBudgetTable(t Theme, s Snapshot, width int, warning, danger int)
 	// Allocated vs plan limit, so over-allocation is obvious. Each half is
 	// written separately so the warning keeps its bad tone while still
 	// wrapping inside the terminal.
-	// The label says monthly, so the figures must be monthly. `w` is the focused
-	// window (the 5-hour one), whose AllocatedTotal and limit are window-scale;
-	// printing those under a monthly label reported $7.00 "of $12.00 monthly"
-	// when the monthly limit is $60.
+	//
+	// Per-model caps are independent ceilings, not shares of one pool, so summing
+	// them and comparing to the plan meter would be meaningless. State the plan
+	// meter, and where the caps came from, instead.
 	monthly := s.Window(budget.Month)
-	writeWrapped(&b, fmt.Sprintf("%s allocated of %s monthly plan budget",
-		budget.FormatUSD(monthly.AllocatedTotal), budget.FormatUSD(monthly.Meter.LimitMicroCents)), "  ", width)
+	if monthly.HasPlanCaps {
+		writeWrapped(&b, fmt.Sprintf("per-model caps from the %s plan (%s); plan meter %s of %s per month",
+			s.PlanName, s.AllowanceSource, budget.FormatUSD(monthly.Meter.UsedMicroCents),
+			budget.FormatUSD(monthly.Meter.LimitMicroCents)), "  ", width)
+	} else if monthly.AllocatedTotal > 0 {
+		writeWrapped(&b, fmt.Sprintf("%s allocated of %s monthly plan budget",
+			budget.FormatUSD(monthly.AllocatedTotal), budget.FormatUSD(monthly.Meter.LimitMicroCents)), "  ", width)
+	}
 	if monthly.OverAllocated > 0 {
 		writeWrapped(&b, fmt.Sprintf("over-allocated by %s", budget.FormatUSD(monthly.OverAllocated)), "  ", width)
 	}

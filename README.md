@@ -78,48 +78,52 @@ opencode-limits --once     # plain-text report, for scripts or a quick check
 If no credential is found it runs the same device-code login the CLI uses and
 prints a code and URL. To force a fresh sign-in: `opencode-limits --login`.
 
-### Declaring per-model budgets
+### Per-model limits come from the plan
 
-Budgets live in your own config file, not in OpenCode. Generate a starter file
-listing your plan's models:
+You do **not** declare budgets any more. The plan itself publishes a monthly
+limit per model, and the tool uses it. Inspect the table at any time:
 
 ```bash
-opencode-limits --init
+opencode-limits --allowances          # the full per-model table
+opencode-limits --check-allowances    # diff the embedded copy against the live one
 ```
 
-That writes `config.toml` with every enabled model at `0`:
+The figures match the published table at
+[opencode.ai/console/go](https://opencode.ai/console/go) — for Go:
 
-| OS | Path |
+| Model | Monthly cap |
 |---|---|
-| Linux | `~/.config/opencode-limits/config.toml` (`$XDG_CONFIG_HOME`) |
-| macOS | `~/Library/Application Support/opencode-limits/config.toml` |
-| Windows | `%LOCALAPPDATA%\opencode-limits\config.toml` |
+| GPT-6 Luna, Kimi K3, DeepSeek V4 Pro, Claude Haiku 5.5 | $15 |
+| Qwen3.8 Flash | $30 |
+| Gemini 4 Argon | $30 |
+| GLM-5.3-Flash, MiniMax-M3, Kimi K2.7 Code | $60 |
+| DeepSeek V4.1 Flash | $100 |
+| GLM-5.3 | $500 |
+| Beam Free and other free models | unlimited |
 
-Then set a monthly USD share per model:
+Go Plus values are roughly double; `--allowances` prints all three columns.
+
+**These are independent ceilings, not shares of a pool.** Each model can spend up
+to its own monthly cap; using $15 of GPT-6 Luna does not reduce what GLM-5.3 may
+spend, and the caps are never summed into one budget. That is why the Overview
+shows "remaining" per model against its own cap rather than a total.
+
+Where the numbers come from: OpenCode does not expose them over its API — the
+model catalog at `/api/v1/models` and the models.dev feed both omit the field. Only
+the public web bundle carries them, as `go.monthly_usage` per model. The tool ships
+an embedded copy (so it works offline) and refreshes it from that bundle when the
+network allows, falling back to the embedded figures on failure.
+
+### Optional: local overrides
+
+A model the plan does not publish a cap for can still get one, via `config.toml`:
 
 ```toml
-refresh_seconds = 60
-warning_percent = 70
-danger_percent  = 95
-
 [allocations]
-"gpt-6-luna"         = 15    # guardrail: keep the dear model cheap
-"deepseek-v4.1-flash" = 100
-"glm-5.3"            = 200
+"some-unpublished-model" = 40   # monthly USD
 ```
 
-Values are **monthly**. The tool scales each one into the 5-hour and weekly
-windows using your plan's live limits, so on the $10 Go plan ($12 / $30 / $60):
-
-| Model | Monthly | 5-hour | Weekly |
-|---|---|---|---|
-| GPT-6 Luna | $15 | $3.00 | $7.50 |
-| DeepSeek V4.1 Flash | $100 | $20.00 | $50.00 |
-| GLM-5.3 | $200 | $40.00 | $100.00 |
-
-Allocations are a planning overlay only — they never change anything in
-OpenCode. If they add up to more than your plan allowance the UI says so with an
-explicit `over-allocated by $X` line rather than silently normalising.
+A published cap always wins over a local override.
 
 ## Screens
 

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/cydnirn/opencode-limits/internal/allowance"
 	"github.com/cydnirn/opencode-limits/internal/console"
 )
 
@@ -70,6 +71,33 @@ func MeterOf(m console.Meters, w Window) console.Meter {
 	}
 }
 
+// CapSource records where a model's monthly cap came from, so the UI can say
+// whether a number is the plan's own published limit or a local declaration.
+type CapSource string
+
+const (
+	// CapFromPlan is the per-model monthly limit OpenCode publishes.
+	CapFromPlan CapSource = "plan"
+	// CapFromLocal is a model the published table does not cover, using the
+	// operator's declared allocation instead.
+	CapFromLocal CapSource = "local"
+)
+
+// resolveCap returns a model's monthly cap, whether it is unlimited, and where
+// the number came from. The published plan figure wins over a local allocation
+// because it is the number that actually applies.
+func resolveCap(in Input, model string) (usd float64, unlimited bool, src CapSource, ok bool) {
+	if l, found := in.Allowances.Lookup(model); found {
+		if v, inf, has := l.MonthlyFor(in.Plan); has {
+			return v, inf, CapFromPlan, true
+		}
+	}
+	if v, has := in.Allocations[model]; has && v > 0 {
+		return v, false, CapFromLocal, true
+	}
+	return 0, false, "", false
+}
+
 // Attribution is one model's spend inside a window.
 type Attribution struct {
 	Model   string
@@ -86,6 +114,11 @@ type Attribution struct {
 	Remaining console.MicroCents
 	// Exhausted reports that spend met or exceeded the window allocation.
 	Exhausted bool
+	// Unlimited reports that the plan places no monthly cap on this model.
+	Unlimited bool
+	// CapSource says where the cap came from: the plan's published table or a
+	// locally declared allocation.
+	CapSource CapSource
 	// PercentOfAllocation is spend/allocation, PercentOfPlan is spend/limit.
 	// Both are 0 when the denominator is zero.
 	PercentOfAllocation float64
@@ -115,9 +148,15 @@ type WindowView struct {
 	Unattributed console.MicroCents
 	// UnattributedPercent is Unattributed as a share of meter used.
 	UnattributedPercent float64
-	// AllocatedTotal is the sum of every declared allocation scaled here.
+	// AllocatedTotal is the sum of every model's cap scaled into this window. It
+	// is informational for plan caps, which are not shares of a shared pool.
 	AllocatedTotal console.MicroCents
-	// OverAllocated is AllocatedTotal minus the window limit, floored at zero.
+	// HasPlanCaps reports that at least one model's cap came from the plan's
+	// published table rather than a local declaration.
+	HasPlanCaps bool
+	// OverAllocated is AllocatedTotal minus the window limit, floored at zero. It
+	// is only meaningful when every cap is a local share (HasPlanCaps false),
+	// because plan caps are independent rather than additive.
 	OverAllocated console.MicroCents
 	Now           time.Time
 }
@@ -155,8 +194,16 @@ func (v WindowView) Elapsed() (time.Duration, time.Duration) {
 
 // Input carries everything needed to compute views.
 type Input struct {
-	Now         time.Time
-	Meters      console.Meters
+	Now    time.Time
+	Meters console.Meters
+	// Plan is the subscription tier ("go", "go-plus", "go-teams"); it selects
+	// which column of the published per-model allowance applies.
+	Plan string
+	// Allowances is the published monthly cap per model. These are the plan's
+	// real per-model limits and take precedence over Allocations.
+	Allowances allowance.Table
+	// Allocations is the legacy operator-declared overlay, kept for models the
+	// published table does not cover.
 	Allocations map[string]float64
 	// UsageByWindow holds per-model usage fetched with each window's own
 	// startsAt, which is what makes per-window attribution possible.
@@ -184,6 +231,7 @@ func buildWindow(in Input, w Window) WindowView {
 	rows := make([]Attribution, 0, len(usage))
 	var attributed console.MicroCents
 	var allocatedTotal console.MicroCents
+	var hasPlanCaps bool
 
 	for _, u := range usage {
 		a := Attribution{Model: u.Model, Usage: u}
@@ -191,19 +239,31 @@ func buildWindow(in Input, w Window) WindowView {
 			a.Catalog = cm
 			a.HasPricing = true
 		}
-		if usd, ok := in.Allocations[u.Model]; ok && usd > 0 {
+		// The published per-model monthly cap is the plan's own limit and wins;
+		// a declared allocation is only a fallback for models it does not cover.
+		if capUSD, unlimited, source, ok := resolveCap(in, u.Model); ok {
 			a.HasAllocation = true
-			a.AllocatedMonthly = usd
-			a.AllocatedWindow = console.FromUSD(usd * scale)
-			allocatedTotal += a.AllocatedWindow
-			spend := u.CostMicroCents
-			if spend < a.AllocatedWindow {
-				a.Remaining = a.AllocatedWindow - spend
-			} else {
-				a.Exhausted = true
+			a.AllocatedMonthly = capUSD
+			a.CapSource = source
+			if source == CapFromPlan {
+				hasPlanCaps = true
 			}
-			if a.AllocatedWindow > 0 {
-				a.PercentOfAllocation = float64(spend) / float64(a.AllocatedWindow) * 100
+			if unlimited {
+				a.Unlimited = true
+				// No ceiling: show spend, never claim a remaining amount.
+				a.Remaining = 0
+			} else {
+				a.AllocatedWindow = console.FromUSD(capUSD * scale)
+				allocatedTotal += a.AllocatedWindow
+				spend := u.CostMicroCents
+				if spend < a.AllocatedWindow {
+					a.Remaining = a.AllocatedWindow - spend
+				} else {
+					a.Exhausted = true
+				}
+				if a.AllocatedWindow > 0 {
+					a.PercentOfAllocation = float64(spend) / float64(a.AllocatedWindow) * 100
+				}
 			}
 		}
 		if meter.LimitMicroCents > 0 {
@@ -234,18 +294,37 @@ func buildWindow(in Input, w Window) WindowView {
 	for _, r := range rows {
 		seen[r.Model] = true
 	}
-	for model, usd := range in.Allocations {
-		if usd <= 0 || seen[model] {
+	// Every model with a cap should be listed even before it is used, so the
+	// operator can see what is available rather than only what has been spent.
+	unused := map[string]bool{}
+	for model := range in.Allocations {
+		unused[model] = true
+	}
+	for _, model := range in.Allowances.ModelIDs() {
+		unused[model] = true
+	}
+	for model := range unused {
+		if seen[model] {
 			continue
 		}
-		aw := console.FromUSD(usd * scale)
-		allocatedTotal += aw
+		capUSD, unlimited, source, ok := resolveCap(in, model)
+		if !ok {
+			continue
+		}
 		a := Attribution{
 			Model:            model,
 			HasAllocation:    true,
-			AllocatedMonthly: usd,
-			AllocatedWindow:  aw,
-			Remaining:        aw,
+			AllocatedMonthly: capUSD,
+			CapSource:        source,
+			Unlimited:        unlimited,
+		}
+		if source == CapFromPlan {
+			hasPlanCaps = true
+		}
+		if !unlimited {
+			a.AllocatedWindow = console.FromUSD(capUSD * scale)
+			a.Remaining = a.AllocatedWindow
+			allocatedTotal += a.AllocatedWindow
 		}
 		if cm, ok := in.Catalog[model]; ok {
 			a.Catalog = cm
@@ -263,7 +342,13 @@ func buildWindow(in Input, w Window) WindowView {
 		v.UnattributedPercent = float64(v.Unattributed) / float64(meter.UsedMicroCents) * 100
 	}
 	v.AllocatedTotal = allocatedTotal
-	if allocatedTotal > meter.LimitMicroCents {
+	v.HasPlanCaps = hasPlanCaps
+	// Over-allocation only means anything for locally declared shares of one pool.
+	// The plan's published per-model caps are independent ceilings: every model may
+	// spend up to its own cap regardless of the others, so summing them and
+	// comparing to the plan meter (e.g. $555 of caps against a $60 monthly meter)
+	// is meaningless and reported nothing meaningful before.
+	if !v.HasPlanCaps && allocatedTotal > meter.LimitMicroCents {
 		v.OverAllocated = allocatedTotal - meter.LimitMicroCents
 	}
 	return v
@@ -275,6 +360,11 @@ func buildWindow(in Input, w Window) WindowView {
 func sortAttributions(rows []Attribution) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
+		// Unlimited models cannot run out, so they never belong at the top of a
+		// "what is about to run dry" list.
+		if a.Unlimited != b.Unlimited {
+			return !a.Unlimited
+		}
 		if a.HasAllocation != b.HasAllocation {
 			return a.HasAllocation
 		}

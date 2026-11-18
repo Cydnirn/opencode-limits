@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/cydnirn/opencode-limits/internal/allowance"
 	"github.com/cydnirn/opencode-limits/internal/budget"
 	"github.com/cydnirn/opencode-limits/internal/config"
 	"github.com/cydnirn/opencode-limits/internal/console"
@@ -42,6 +44,8 @@ func run() error {
 		refresh     = flag.Duration("refresh", 0, "refresh interval (default: from config, else 60s)")
 		login       = flag.Bool("login", false, "force a fresh device-code login")
 		showVersion = flag.Bool("version", false, "print version and exit")
+		showAllow   = flag.Bool("allowances", false, "print the per-model monthly limits and exit")
+		checkAllow  = flag.Bool("check-allowances", false, "compare the embedded limit table with the live one and exit")
 		initConfig  = flag.Bool("init", false, "write a starter config.toml from the plan's models and exit")
 		noLogin     = flag.Bool("no-login", false, "fail instead of starting a device login when unauthenticated")
 	)
@@ -50,6 +54,11 @@ func run() error {
 	if *showVersion {
 		fmt.Println("opencode-limits " + version)
 		return nil
+	}
+
+	// The allowance table is public, so this works without signing in.
+	if *showAllow || *checkAllow {
+		return runAllowances(*checkAllow)
 	}
 
 	paths, err := config.FromOSEnv().Resolve()
@@ -152,6 +161,7 @@ func run() error {
 		Client:     client,
 		Config:     cfg,
 		ConfigPath: paths.ConfigFile,
+		Allowances: &allowance.Resolver{},
 		Timeout:    45 * time.Second,
 	}
 
@@ -253,6 +263,41 @@ func writeStarterConfig(client *console.Client, paths config.Paths, cfg config.C
 			status.Access.Meters.Week.LimitMicroCents.USD(),
 			status.Access.Meters.Month.LimitMicroCents.USD())
 		fmt.Println("Set each model's monthly USD share in [allocations], then run opencode-limits.")
+	}
+	return nil
+}
+
+// runAllowances prints the per-model monthly limits, optionally diffing the
+// embedded copy against the live one so upstream price changes are visible.
+func runAllowances(check bool) error {
+	ctx := context.Background()
+	embedded := allowance.Embedded()
+
+	if !check {
+		fmt.Printf("%-30s %10s %10s %10s\n", "MODEL", "GO", "GO PLUS", "GO TEAMS")
+		fmt.Println(strings.Repeat("-", 64))
+		for _, id := range embedded.ModelIDs() {
+			l, _ := embedded.Lookup(id)
+			fmt.Printf("%-30s %10s %10s %10s\n", id,
+				l.String("go"), l.String("go-plus"), l.String("go-teams"))
+		}
+		fmt.Printf("\n%d models. These are the plan's published per-model monthly caps,\n", len(embedded))
+		fmt.Println("independent of each other - not a shared budget.")
+		return nil
+	}
+
+	live, err := allowance.Fetch(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("refresh allowances: %w", err)
+	}
+	diffs := allowance.Compare(embedded, live)
+	if len(diffs) == 0 {
+		fmt.Println("embedded allowance table matches the live one.")
+		return nil
+	}
+	fmt.Printf("%d differences between the embedded table and the live one:\n", len(diffs))
+	for _, d := range diffs {
+		fmt.Println("  " + d)
 	}
 	return nil
 }

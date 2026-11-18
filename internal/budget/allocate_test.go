@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cydnirn/opencode-limits/internal/allowance"
 	"github.com/cydnirn/opencode-limits/internal/console"
 )
 
@@ -340,6 +341,16 @@ func TestPlanLimitsTable(t *testing.T) {
 	}
 }
 
+// modelRow finds one model's row in a window, independent of sort order.
+func modelRow(v WindowView, id string) (Attribution, bool) {
+	for _, m := range v.Models {
+		if m.Model == id {
+			return m, true
+		}
+	}
+	return Attribution{}, false
+}
+
 func findWindow(views []WindowView, w Window) WindowView {
 	for _, v := range views {
 		if v.Window == w {
@@ -373,5 +384,156 @@ func TestFormatPercentReportsOverspend(t *testing.T) {
 				t.Errorf("FormatPercent(%v) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// planAllowances mirrors the published Go table for the models under test.
+func planAllowances() allowance.Table {
+	return allowance.Table{
+		"gpt-6-luna":          {Monthly: map[string]float64{"go": 15, "go-plus": 60}},
+		"deepseek-v4.1-flash": {Monthly: map[string]float64{"go": 100, "go-plus": 200}},
+		"glm-5.3":             {Monthly: map[string]float64{"go": 500, "go-plus": 1000}},
+		"beam-free":           {Monthly: map[string]float64{"go": 0, "go-plus": 0}},
+	}
+}
+
+// The plan's published per-model cap must be used for remaining budget, not a
+// locally invented allocation.
+func TestPlanAllowanceDrivesRemaining(t *testing.T) {
+	in := Input{
+		Now:         time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+		Meters:      baseMeters(),
+		Plan:        "go",
+		Allowances:  planAllowances(),
+		Allocations: map[string]float64{"gpt-6-luna": 999}, // must be ignored
+		UsageByWindow: map[Window][]console.ModelUsage{
+			Month: {{Model: "gpt-6-luna", CostMicroCents: usd(5)}},
+		},
+	}
+	a, ok := modelRow(findWindow(Build(in), Month), "gpt-6-luna")
+	if !ok {
+		t.Fatal("gpt-6-luna not listed")
+	}
+	if a.AllocatedMonthly != 15 {
+		t.Errorf("cap = %v, want the plan's 15 (not the local 999)", a.AllocatedMonthly)
+	}
+	if a.CapSource != CapFromPlan {
+		t.Errorf("cap source = %q, want %q", a.CapSource, CapFromPlan)
+	}
+	if got, want := a.Remaining, usd(10); got != want {
+		t.Errorf("remaining = %v, want %v", got, want)
+	}
+}
+
+// A model missing from the published table falls back to a local allocation, and
+// says so.
+func TestLocalAllocationFallbackWhenUncapped(t *testing.T) {
+	in := Input{
+		Now:         time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+		Meters:      baseMeters(),
+		Plan:        "go",
+		Allowances:  planAllowances(),
+		Allocations: map[string]float64{"some-new-model": 40},
+		UsageByWindow: map[Window][]console.ModelUsage{
+			Month: {{Model: "some-new-model", CostMicroCents: usd(10)}},
+		},
+	}
+	a, ok := modelRow(findWindow(Build(in), Month), "some-new-model")
+	if !ok {
+		t.Fatal("some-new-model not listed")
+	}
+	if a.CapSource != CapFromLocal {
+		t.Fatalf("cap source = %q, want local", a.CapSource)
+	}
+	if got, want := a.Remaining, usd(30); got != want {
+		t.Errorf("remaining = %v, want %v", got, want)
+	}
+}
+
+// An unlimited model must never report a remaining amount or look exhausted.
+func TestUnlimitedModelHasNoRemaining(t *testing.T) {
+	in := Input{
+		Now:        time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+		Meters:     baseMeters(),
+		Plan:       "go",
+		Allowances: planAllowances(),
+		UsageByWindow: map[Window][]console.ModelUsage{
+			Month: {{Model: "beam-free", CostMicroCents: usd(99)}},
+		},
+	}
+	a, ok := modelRow(findWindow(Build(in), Month), "beam-free")
+	if !ok {
+		t.Fatal("beam-free not listed")
+	}
+	if !a.Unlimited {
+		t.Fatal("beam-free should be unlimited")
+	}
+	if a.Exhausted {
+		t.Error("an unlimited model must never be exhausted")
+	}
+	if a.Remaining != 0 {
+		t.Errorf("remaining = %v, want 0 (meaning n/a, not a budget)", a.Remaining)
+	}
+}
+
+// The plan tier selects the right column: the same model has a higher cap on
+// Go Plus.
+func TestPlanTierSelectsColumn(t *testing.T) {
+	usage := map[Window][]console.ModelUsage{
+		Month: {{Model: "glm-5.3", CostMicroCents: usd(100)}},
+	}
+	base := func(plan string) float64 {
+		in := Input{
+			Now:           time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+			Meters:        baseMeters(),
+			Plan:          plan,
+			Allowances:    planAllowances(),
+			UsageByWindow: usage,
+		}
+		for _, m := range findWindow(Build(in), Month).Models {
+			if m.Model == "glm-5.3" {
+				return m.AllocatedMonthly
+			}
+		}
+		return -1
+	}
+	if got := base("go"); got != 500 {
+		t.Errorf("go cap = %v, want 500", got)
+	}
+	if got := base("go-plus"); got != 1000 {
+		t.Errorf("go-plus cap = %v, want 1000", got)
+	}
+}
+
+// Every planned model should be listed even with no usage, so available budget is
+// visible before spending starts.
+func TestUnusedCappedModelsAreListed(t *testing.T) {
+	in := Input{
+		Now:           time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+		Meters:        baseMeters(),
+		Plan:          "go",
+		Allowances:    planAllowances(),
+		UsageByWindow: map[Window][]console.ModelUsage{},
+	}
+	models := findWindow(Build(in), Month).Models
+	if len(models) != 4 {
+		t.Fatalf("got %d models, want all 4 from the plan table", len(models))
+	}
+}
+
+// Caps are per model, never summed into a shared pool, so a large set of caps must
+// not report as an over-allocated budget.
+func TestCapsAreNotAdditive(t *testing.T) {
+	in := Input{
+		Now:           time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC),
+		Meters:        baseMeters(),
+		Plan:          "go",
+		Allowances:    planAllowances(),
+		UsageByWindow: map[Window][]console.ModelUsage{},
+	}
+	monthly := findWindow(Build(in), Month)
+	if monthly.OverAllocated > 0 {
+		t.Errorf("plan caps are not additive, so nothing is over-allocated; got %v",
+			monthly.OverAllocated)
 	}
 }

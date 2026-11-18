@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cydnirn/opencode-limits/internal/allowance"
 	"github.com/cydnirn/opencode-limits/internal/budget"
 	"github.com/cydnirn/opencode-limits/internal/config"
 	"github.com/cydnirn/opencode-limits/internal/console"
@@ -27,9 +28,15 @@ type Snapshot struct {
 	// Allocations echoes the config in force, so the UI can distinguish "no
 	// allocation declared" from "allocation is zero".
 	Allocations map[string]float64
-	PlanName    string
-	OrgName     string
-	Email       string
+	// Allowances is the published per-model monthly limit table in force.
+	Allowances allowance.Table
+	// AllowanceSource says whether that table came from the binary or a refresh.
+	AllowanceSource allowance.Source
+	// Plan is the subscription tier, which selects the allowance column.
+	Plan     string
+	PlanName string
+	OrgName  string
+	Email    string
 
 	// Err records a partial failure: some data loaded, some did not. The UI
 	// shows what it has and says what is stale.
@@ -69,6 +76,9 @@ type Loader struct {
 	// ConfigPath is echoed into empty states so the operator knows where to
 	// declare allocations.
 	ConfigPath string
+	// Allowances supplies the plan's published per-model monthly limits. When nil
+	// the embedded table is used.
+	Allowances *allowance.Resolver
 	// Timeout bounds the whole refresh so a hung endpoint cannot wedge the UI.
 	Timeout time.Duration
 }
@@ -160,9 +170,22 @@ func (l Loader) Load(ctx context.Context) Snapshot {
 	if status.Access != nil {
 		meters = status.Access.Meters
 	}
+	// Resolve the published per-model limits before building the views: the
+	// embedded table answers immediately and a refresh replaces it if it can.
+	resolver := l.Allowances
+	if resolver == nil {
+		resolver = &allowance.Resolver{}
+	}
+	table, source := resolver.Get(ctx)
+	snap.Allowances = table
+	snap.AllowanceSource = source
+	snap.Plan = planKey(status.Product)
+
 	snap.Windows = budget.Build(budget.Input{
 		Now:           now,
 		Meters:        meters,
+		Plan:          snap.Plan,
+		Allowances:    table,
 		Allocations:   snap.Allocations,
 		UsageByWindow: usageByWindow,
 		Catalog:       snap.Catalog,
@@ -172,6 +195,18 @@ func (l Loader) Load(ctx context.Context) Snapshot {
 		snap.Err = errors.Join(errs...)
 	}
 	return snap
+}
+
+// planKey maps a product identifier to the allowance table's plan column.
+func planKey(product string) string {
+	switch product {
+	case "go-plus":
+		return "go-plus"
+	case "go-teams":
+		return "go-teams"
+	default:
+		return "go"
+	}
 }
 
 // productName maps a product identifier to a display name.

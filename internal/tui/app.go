@@ -510,7 +510,11 @@ func renderOnce(snap Snapshot) string {
 		for _, m := range v.Models {
 			alloc := "--"
 			left := "--"
-			if m.HasAllocation {
+			switch {
+			case m.Unlimited:
+				alloc = "unlimited"
+				left = "unlimited"
+			case m.HasAllocation:
 				alloc = budget.FormatUSD(m.AllocatedWindow)
 				left = budget.FormatUSD(m.Remaining)
 			}
@@ -521,19 +525,27 @@ func renderOnce(snap Snapshot) string {
 		}
 		fmt.Fprintf(&b, "  unattributed: %s (%.0f%% of window spend)\n",
 			budget.FormatUSD(v.Unattributed), v.UnattributedPercent)
-		// State the scope: the figure is scaled into this window, not monthly.
-		fmt.Fprintf(&b, "  allocated %s of %s in this window\n",
-			budget.FormatUSD(v.AllocatedTotal), budget.FormatUSD(v.Meter.LimitMicroCents))
+		// Per-model caps are parallel ceilings, so do not present their sum as a
+		// budget shared against this window's meter.
+		if !v.HasPlanCaps && v.AllocatedTotal > 0 {
+			fmt.Fprintf(&b, "  allocated %s of %s in this window\n",
+				budget.FormatUSD(v.AllocatedTotal), budget.FormatUSD(v.Meter.LimitMicroCents))
+		}
 		if v.OverAllocated > 0 {
 			fmt.Fprintf(&b, "  over-allocated by %s in this window\n", budget.FormatUSD(v.OverAllocated))
 		}
 	}
 
-	// The monthly commitment is the number the operator actually decides, so it
-	// gets its own unambiguous line rather than being inferred from a window.
+	// Per-model caps are independent ceilings, not shares of one pool, so they are
+	// never summed. State the plan meter instead, and say where the caps came from.
 	monthly := snap.Window(budget.Month)
-	fmt.Fprintf(&b, "\nMONTHLY COMMITMENT\n  %s allocated of %s plan\n",
-		budget.FormatUSD(monthly.AllocatedTotal), budget.FormatUSD(monthly.Meter.LimitMicroCents))
+	fmt.Fprintf(&b, "\nMONTHLY\n  plan meter %s of %s\n",
+		budget.FormatUSD(monthly.Meter.UsedMicroCents),
+		budget.FormatUSD(monthly.Meter.LimitMicroCents))
+	if monthly.HasPlanCaps {
+		fmt.Fprintf(&b, "  per-model caps from the %s plan (%s source)\n",
+			snap.PlanName, snap.AllowanceSource)
+	}
 	if monthly.OverAllocated > 0 {
 		fmt.Fprintf(&b, "  over-allocated by %s\n", budget.FormatUSD(monthly.OverAllocated))
 	}
