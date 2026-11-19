@@ -378,6 +378,9 @@ type CatalogModel struct {
 	// MultiplierFromDate is the start date when the rule is date-scoped
 	// instead of daily.
 	MultiplierFromDate string
+	// MultiplierServiceTier names the service tier a multiplier applies to
+	// (e.g. "priority"), which is a different dimension from time.
+	MultiplierServiceTier string
 }
 
 // Free reports whether the model costs nothing.

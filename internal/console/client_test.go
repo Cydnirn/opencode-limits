@@ -672,3 +672,107 @@ func TestSaveCreatesFileWhenNoneExists(t *testing.T) {
 		t.Errorf("access = %q", got.Access)
 	}
 }
+
+// The live catalog sends `factor` in two shapes: a number on time-based rules and
+// an object keyed by modality ({"text": 2}) on service-tier rules. Declaring it
+// float64 made the whole catalog decode fail with "cannot unmarshal object into
+// Go struct field ... of type float64", which took the Pricing screen down with a
+// partial-data warning while every fixture-based test still passed.
+const multiShapeCatalog = `{"opencode":{"id":"opencode","models":{
+ "time-rule":{"id":"time-rule","name":"Time Rule",
+   "limit":{"context":1000000,"output":131072},
+   "cost":{"text":{"input":{"price":0.15,"cache":{"read":0.003}},"output":{"price":0.6}},
+           "multipliers":[{"when":{"utc_days":{"in":["mon","tue"]},
+             "any":[{"all":[{"utc_hours":{"gte":"01:00"}}]}]},"factor":2}]}},
+ "tier-rule":{"id":"tier-rule","name":"Tier Rule",
+   "limit":{"context":400000,"output":128000},
+   "cost":{"text":{"input":{"price":0.1},"output":{"price":0.5}},
+           "multipliers":[{"when":{"service_tier":{"equals":"priority"}},"factor":{"text":2.5}}]}},
+ "no-rule":{"id":"no-rule","name":"No Rule",
+   "limit":{"context":200000,"output":64000},
+   "cost":{"text":{"input":{"price":3},"output":{"price":15}}}}
+}}}`
+
+func TestCatalogParsesBothMultiplierFactorShapes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, multiShapeCatalog)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "credential.json")
+	writeCredential(t, credPath, Credential{
+		Server: srv.URL, Access: "tok",
+		Expires: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	c := NewClient(&Store{Path: credPath}, srv.URL)
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+
+	cat, err := c.Catalog()
+	if err != nil {
+		t.Fatalf("Catalog must accept both factor shapes: %v", err)
+	}
+	if len(cat) != 3 {
+		t.Fatalf("parsed %d models, want 3", len(cat))
+	}
+
+	// Numeric factor on a weekday rule.
+	tr := cat["time-rule"]
+	if !tr.HasTimeMultiplier || tr.MultiplierFactor != 2 {
+		t.Errorf("time-rule factor = %v (has=%v), want 2", tr.MultiplierFactor, tr.HasTimeMultiplier)
+	}
+	if len(tr.MultiplierDays) != 2 {
+		t.Errorf("time-rule days = %v, want mon/tue", tr.MultiplierDays)
+	}
+
+	// Object factor on a service-tier rule, and the tier must be captured rather
+	// than reported as a time window.
+	tier := cat["tier-rule"]
+	if !tier.HasTimeMultiplier || tier.MultiplierFactor != 2.5 {
+		t.Errorf("tier-rule factor = %v, want 2.5 from {\"text\":2.5}", tier.MultiplierFactor)
+	}
+	if tier.MultiplierServiceTier != "priority" {
+		t.Errorf("tier-rule service tier = %q, want priority", tier.MultiplierServiceTier)
+	}
+	if len(tier.MultiplierDays) != 0 || tier.MultiplierFromDate != "" {
+		t.Errorf("tier-rule must not look date/weekday-scoped: days=%v from=%q",
+			tier.MultiplierDays, tier.MultiplierFromDate)
+	}
+
+	if cat["no-rule"].HasTimeMultiplier {
+		t.Error("no-rule should have no multiplier")
+	}
+}
+
+func TestMultiFactorAcceptsEveryShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  float64
+	}{
+		{name: "bare number", input: `2`, want: 2},
+		{name: "fractional number", input: `2.5`, want: 2.5},
+		{name: "text object", input: `{"text":2}`, want: 2},
+		{name: "text object fractional", input: `{"text":2.5}`, want: 2.5},
+		{name: "other modality only", input: `{"audio":3}`, want: 3},
+		{name: "text wins over other", input: `{"text":2,"audio":9}`, want: 2},
+		{name: "null", input: `null`, want: 0},
+		{name: "empty object", input: `{}`, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got multiFactor
+			if err := json.Unmarshal([]byte(tt.input), &got); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", tt.input, err)
+			}
+			if float64(got) != tt.want {
+				t.Errorf("multiFactor(%s) = %v, want %v", tt.input, float64(got), tt.want)
+			}
+		})
+	}
+}

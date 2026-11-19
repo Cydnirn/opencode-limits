@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -263,6 +264,65 @@ func (c *Client) UsageSince(since time.Time) ([]ModelUsage, error) {
 	return out, nil
 }
 
+// wireMultiplier is one price-multiplier rule.
+//
+// `factor` arrives in two shapes in the live catalog: a bare number
+// (`"factor": 2`) on time-based rules, and an object keyed by modality
+// (`"factor": {"text": 2}`) on service-tier rules. Decoding it as a plain
+// float64 makes the whole catalog fail with "cannot unmarshal object into ...
+// of type float64", which took the Pricing screen down.
+type wireMultiplier struct {
+	Factor multiFactor `json:"factor"`
+	When   struct {
+		UTCDays struct {
+			In []string `json:"in"`
+		} `json:"utc_days"`
+		Date struct {
+			Gte string `json:"gte"`
+		} `json:"date"`
+		ServiceTier struct {
+			Equals string `json:"equals"`
+		} `json:"service_tier"`
+	} `json:"when"`
+}
+
+// multiFactor accepts either a number or a per-modality object.
+type multiFactor float64
+
+// UnmarshalJSON reads a number, or an object and takes its "text" factor (the
+// only modality this tool prices), or null.
+func (m *multiFactor) UnmarshalJSON(b []byte) error {
+	raw := bytes.TrimSpace(b)
+	if len(raw) == 0 || string(raw) == "null" {
+		*m = 0
+		return nil
+	}
+	if raw[0] == '{' {
+		var byModality map[string]float64
+		if err := json.Unmarshal(raw, &byModality); err != nil {
+			return fmt.Errorf("multiplier factor object: %w", err)
+		}
+		// Text is the modality being priced; prefer it, else take any value so a
+		// future modality still surfaces rather than being dropped.
+		if v, ok := byModality["text"]; ok {
+			*m = multiFactor(v)
+			return nil
+		}
+		for _, v := range byModality {
+			*m = multiFactor(v)
+			return nil
+		}
+		*m = 0
+		return nil
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("multiplier factor: %w", err)
+	}
+	*m = multiFactor(v)
+	return nil
+}
+
 // flexFloat decodes a JSON number or a numeric string.
 //
 // The Console's model catalog is inconsistent across fields and across models:
@@ -330,31 +390,34 @@ type wireModel struct {
 		} `json:"text"`
 		// Multipliers sits on cost, not cost.text, and applies to the whole
 		// model's pricing.
-		Multipliers []struct {
-			Factor float64 `json:"factor"`
-			When   struct {
-				UTCDays struct {
-					In []string `json:"in"`
-				} `json:"utc_days"`
-				Date struct {
-					Gte string `json:"gte"`
-				} `json:"date"`
-			} `json:"when"`
-		} `json:"multipliers"`
+		Multipliers []wireMultiplier `json:"multipliers"`
 	} `json:"cost"`
 }
 
 // Catalog fetches static model pricing.
 func (c *Client) Catalog() (map[string]CatalogModel, error) {
-	var w map[string]struct {
-		Models map[string]wireModel `json:"models"`
+	// Decode into raw messages first so a single model with an unexpected shape
+	// cannot fail the whole catalog. That has happened twice: prices arriving as
+	// numbers instead of strings, and multiplier factors arriving as objects
+	// instead of numbers. Both took the entire Pricing screen down over one field.
+	var envelope map[string]struct {
+		Models map[string]json.RawMessage `json:"models"`
 	}
-	if err := c.do("/api/v1/models", nil, &w); err != nil {
+	if err := c.do("/api/v1/models", nil, &envelope); err != nil {
 		return nil, err
 	}
+
 	out := map[string]CatalogModel{}
-	for _, prov := range w {
-		for id, m := range prov.Models {
+	var skipped []string
+	for _, prov := range envelope {
+		for id, raw := range prov.Models {
+			var m wireModel
+			if err := json.Unmarshal(raw, &m); err != nil {
+				// Record which model and why, then carry on: the rest of the
+				// catalog is still useful.
+				skipped = append(skipped, fmt.Sprintf("%s: %v", id, err))
+				continue
+			}
 			if id == "" {
 				id = m.ID
 			}
@@ -401,11 +464,13 @@ func (c *Client) Catalog() (map[string]CatalogModel, error) {
 				cm.HasTimeMultiplier = true
 				best := 0.0
 				for _, mul := range m.Cost.Multipliers {
-					if mul.Factor > best {
-						best = mul.Factor
-						cm.MultiplierFactor = mul.Factor
+					f := float64(mul.Factor)
+					if f > best {
+						best = f
+						cm.MultiplierFactor = f
 						cm.MultiplierDays = mul.When.UTCDays.In
 						cm.MultiplierFromDate = mul.When.Date.Gte
+						cm.MultiplierServiceTier = mul.When.ServiceTier.Equals
 					}
 				}
 				cm.MultiplierFactor = best
@@ -413,7 +478,24 @@ func (c *Client) Catalog() (map[string]CatalogModel, error) {
 			out[id] = cm
 		}
 	}
+	if len(skipped) > 0 {
+		// Partial data is reported, never hidden: the Pricing screen says how many
+		// models it could not read, so a silent gap cannot be mistaken for "this
+		// plan has fewer models".
+		return out, &CatalogDecodeError{Skipped: skipped}
+	}
 	return out, nil
+}
+
+// CatalogDecodeError reports models the catalog could not decode while the rest
+// succeeded. Callers should still use the returned map.
+type CatalogDecodeError struct {
+	Skipped []string
+}
+
+func (e *CatalogDecodeError) Error() string {
+	return fmt.Sprintf("catalog: %d model(s) could not be decoded: %s",
+		len(e.Skipped), truncate(strings.Join(e.Skipped, "; "), 300))
 }
 
 // ActivityGo is GET /api/activity/go — daily totals plus request counts.

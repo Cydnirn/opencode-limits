@@ -142,7 +142,13 @@ func (l Loader) Load(ctx context.Context) Snapshot {
 		}
 	}
 
+	// Keep whatever the catalog returned even when it also reports a decode
+	// problem: a partial catalog still prices most models, and discarding it
+	// would blank the Pricing screen over one unreadable model.
 	if cat, err := l.Client.Catalog(); err != nil {
+		if len(cat) > 0 {
+			snap.Catalog = cat
+		}
 		errs = append(errs, fmt.Errorf("fetch catalog: %w", err))
 	} else {
 		snap.Catalog = cat
