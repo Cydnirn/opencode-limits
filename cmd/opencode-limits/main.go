@@ -24,6 +24,7 @@ import (
 	"github.com/cydnirn/opencode-limits/internal/config"
 	"github.com/cydnirn/opencode-limits/internal/console"
 	"github.com/cydnirn/opencode-limits/internal/tui"
+	"github.com/cydnirn/opencode-limits/internal/update"
 )
 
 // version is stamped at build time via -ldflags.
@@ -35,8 +36,16 @@ var (
 	buildDate = "unknown"
 )
 
+// exitUpdateAvailable is the status used when --check-update finds a newer
+// release. Any non-zero value distinguishes that from "up to date"; 9 is used
+// so a wrapper can tell "update available" from a genuine failure ("1").
+const exitUpdateAvailable = 9
+
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, errUpdateAvailable) {
+			os.Exit(exitUpdateAvailable)
+		}
 		fmt.Fprintln(os.Stderr, "opencode-limits: "+err.Error())
 		os.Exit(1)
 	}
@@ -54,6 +63,8 @@ func run() error {
 		checkAllow  = flag.Bool("check-allowances", false, "compare the embedded limit table with the live one and exit")
 		initConfig  = flag.Bool("init", false, "write a starter config.toml from the plan's models and exit")
 		noLogin     = flag.Bool("no-login", false, "fail instead of starting a device login when unauthenticated")
+		checkUpdate = flag.Bool("check-update", false, "compare this build against the newest release and exit")
+		doUpdate    = flag.Bool("update", false, "download, verify and install the newest release, then exit")
 	)
 	flag.Parse()
 
@@ -63,6 +74,13 @@ func run() error {
 			fmt.Printf("  commit:  %s\n  built:   %s\n", commit, buildDate)
 		}
 		return nil
+	}
+
+	// Updating reads only the public release feed, so it runs before any
+	// credential or config lookup: a broken config must not block a fix that
+	// ships as a new binary.
+	if *checkUpdate || *doUpdate {
+		return runUpdate(*doUpdate)
 	}
 
 	// The allowance table is public, so this works without signing in.
@@ -194,6 +212,89 @@ func run() error {
 		return fmt.Errorf("run TUI: %w", err)
 	}
 	return nil
+}
+
+// runUpdate implements --check-update and --update. It touches nothing but the
+// public release feed, so it works before any credential exists.
+//
+// Exit statuses are the contract: 0 means current (or successfully updated), 9
+// means a newer release exists, and 1 covers every failure. A shell wrapper can
+// therefore decide what to do from $? alone.
+func runUpdate(install bool) error {
+	ctx := context.Background()
+	client := update.NewClient()
+
+	if !install {
+		out, err := client.Check(ctx, version)
+		if err != nil {
+			if errors.Is(err, update.ErrDevBuild) {
+				return devBuildError()
+			}
+			return err
+		}
+		fmt.Printf("current: %s\nlatest:  %s\n", version, out.Latest)
+		if !out.Newer {
+			fmt.Println("up to date.")
+			return nil
+		}
+		fmt.Printf("a newer release is available.\n")
+		if out.AssetURL != "" {
+			fmt.Printf("  %s\n", out.AssetURL)
+		}
+		fmt.Println("run `opencode-limits --update` to install it.")
+		return errUpdateAvailable
+	}
+
+	installer, err := update.NewInstaller()
+	if err != nil {
+		return err
+	}
+	out, err := client.Apply(ctx, version, installer)
+	if err != nil {
+		if errors.Is(err, update.ErrDevBuild) {
+			return devBuildError()
+		}
+		if out.Latest != "" {
+			fmt.Printf("current: %s\nlatest:  %s\n", version, out.Latest)
+		}
+		var nw *update.NotWritableError
+		if errors.As(err, &nw) && out.AssetURL != "" {
+			return fmt.Errorf("%w\nor download it from %s", err, out.AssetURL)
+		}
+		return err
+	}
+
+	fmt.Printf("current: %s\nlatest:  %s\n", version, out.Latest)
+	if !out.Newer {
+		fmt.Println("already up to date; nothing to do.")
+		return nil
+	}
+	switch {
+	case out.Applied:
+		fmt.Printf("updated %s; restart it to use %s.\n", out.Path, out.Latest)
+	case out.Pending != "":
+		// Windows holds a running .exe open, so the download is staged.
+		fmt.Printf("downloaded and verified %s.\n", out.Latest)
+		fmt.Printf("it cannot replace the running binary while that binary is running.\n")
+		fmt.Printf("to finish, close opencode-limits and either restart it or move the new build over the old one:\n")
+		fmt.Printf("  move /Y %q %q\n", out.Pending, out.Target)
+	default:
+		fmt.Printf("downloaded %s but did not install it.\n", out.Latest)
+	}
+	return nil
+}
+
+// errUpdateAvailable carries the "a newer release exists" outcome out of
+// runUpdate without being treated as a failure by main.
+var errUpdateAvailable = errors.New("update available")
+
+// devBuildError explains why a build with no stamped version cannot update. The
+// reason it refuses rather than guessing is that "dev" names no release, so
+// there is nothing to compare against and no matching asset to install.
+func devBuildError() error {
+	return fmt.Errorf("this is a dev build, not a release, so it will not update itself.\n"+
+		"Build a versioned binary with `make build VERSION=vX.Y.Z`, or install a release by hand:\n"+
+		"  https://github.com/%s/%s/releases", update.Owner, update.Repo)
 }
 
 // deviceLogin runs the same device authorization flow the opencode CLI uses,
