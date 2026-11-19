@@ -174,3 +174,34 @@ Auto-refresh on a ticker (60s, matching the Console's own refetch cadence).
 - No write access to Console (no changing plan, no buying credits).
 - No local session-DB parsing — the server is authoritative, so third-party
   machines and other agents' usage are included for free.
+
+## 9. Install and self-update (v0.1.2)
+
+Two halves, because the two audiences are different.
+
+**`install.sh`** is for a machine with no Go toolchain: resolve the newest release,
+download the asset for the host, verify it against the published `.sha256`, run it
+once to prove it starts, install atomically. POSIX sh so it runs under dash as
+`curl … | sh`, and the `latest` tag comes from the release redirect rather than
+the JSON API — no token, no rate limit.
+
+**`--update`** is for the installed binary: it knows its own build-time version,
+compares it with the newest release, verifies and renames over itself. Doing this
+in Go rather than shelling back out to `install.sh` is what makes it work on
+Windows, where there is no shell to rely on.
+
+### Decisions worth recording
+
+| Question | Decision | Why |
+|---|---|---|
+| Where does the version come from? | `-ldflags` stamp, never the file on disk | Nothing records what was installed; comparing bytes would make every local build look stale |
+| What about `git describe` suffixes? | Treated as the tag, not a pre-release | Semver would sort `v0.1.2-5-gabc` **below** `v0.1.2`, so `--update` would offer a downgrade |
+| Replace a running binary how? | Temp file in the target dir, then `rename` | Writing in place fails with `ETXTBSY`; a cross-filesystem rename is not atomic |
+| Windows? | Leave `<exe>.new`, apply next launch | Windows cannot rename over a running executable |
+| Install directory? | `$BINDIR` → `$PREFIX/bin` → `/usr/local/bin` if writable → `~/.local/bin` | Never require sudo when a user-writable option exists |
+| Not on `PATH`? | Print the exact line for bash/zsh/fish | Installing somewhere unreachable is a silent failure |
+| Read-only target? | Report path, keep the verified binary, print the install command | Failing quietly on `sudo`-owned dirs is the common real case |
+
+Tags: v0.1.1 carries the catalog-decode fix; v0.1.2 adds the update flags and the
+installer. v0.1.1 had to be superseded because the docs describe `--update`, and a
+binary without it would have shipped documented-but-absent flags.
