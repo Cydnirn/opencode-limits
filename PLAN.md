@@ -203,5 +203,22 @@ Windows, where there is no shell to rely on.
 | Read-only target? | Report path, keep the verified binary, print the install command | Failing quietly on `sudo`-owned dirs is the common real case |
 
 Tags: v0.1.1 carries the catalog-decode fix; v0.1.2 adds the update flags and the
-installer. v0.1.1 had to be superseded because the docs describe `--update`, and a
-binary without it would have shipped documented-but-absent flags.
+installer; v0.1.3 makes `go install` builds self-updatable. v0.1.1 had to be
+superseded because the docs describe `--update`, and a binary without it would have
+shipped documented-but-absent flags.
+
+### Where the version comes from, in full
+
+Three sources, in priority order:
+
+1. `-ldflags -X main.version` — `make build`, the release workflow. Authoritative.
+2. `debug.ReadBuildInfo()`'s module version — fills in for `go install`, which
+   cannot pass linker flags and would otherwise report `dev` forever.
+3. `dev` — nothing usable. Refuses to self-update.
+
+Step 2 only accepts a version fetched from the module proxy, which carries the tag
+verbatim. A `go build` in a working tree embeds a PSEUDO-version
+(`v0.1.3-0.20261119…-d41`), which names commits *after* a tag; the comparator ranks
+it below the release it descends from, so accepting it would turn `--update` into a
+downgrade. Those builds stay `dev`. Guarded by `releaseVersionFromModule` and its
+8-case table.
