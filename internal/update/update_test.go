@@ -413,7 +413,11 @@ func TestApplyInstallsVerifiedBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows derives os.FileMode from file attributes, not ACLs, and reports 0666
+	// for any writable file regardless of chmod; asserting execute bits there
+	// tests the OS, not this code. Executability on Windows comes from the .exe
+	// extension.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("mode = %v, want executable", info.Mode().Perm())
 	}
 	// The temp file must not survive the rename.
@@ -555,6 +559,12 @@ func TestInstallNotWritableReportsCommand(t *testing.T) {
 	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "opencode-limits")
+	// Making a directory read-only via chmod only means something on Unix. On
+	// Windows the write still succeeds (ACLs, not mode bits, decide), so the
+	// scenario this test sets up cannot exist there.
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod cannot make a directory read-only on Windows; ACLs decide")
+	}
 	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
