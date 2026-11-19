@@ -197,7 +197,7 @@ Windows, where there is no shell to rely on.
 | Where does the version come from? | `-ldflags` stamp, never the file on disk | Nothing records what was installed; comparing bytes would make every local build look stale |
 | What about `git describe` suffixes? | Treated as the tag, not a pre-release | Semver would sort `v0.1.2-5-gabc` **below** `v0.1.2`, so `--update` would offer a downgrade |
 | Replace a running binary how? | Temp file in the target dir, then `rename` | Writing in place fails with `ETXTBSY`; a cross-filesystem rename is not atomic |
-| Windows? | Leave `<exe>.new`, apply next launch | Windows cannot rename over a running executable |
+| Windows? | Leave `<exe>.new`, print the `move /Y` command, exit 0 | Windows cannot rename over a running executable. Nothing applies it automatically at launch — the user runs the printed command after closing the tool |
 | Install directory? | `$BINDIR` → `$PREFIX/bin` → `/usr/local/bin` if writable → `~/.local/bin` | Never require sudo when a user-writable option exists |
 | Not on `PATH`? | Print the exact line for bash/zsh/fish | Installing somewhere unreachable is a silent failure |
 | Read-only target? | Report path, keep the verified binary, print the install command | Failing quietly on `sudo`-owned dirs is the common real case |
