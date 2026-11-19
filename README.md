@@ -85,8 +85,11 @@ go install github.com/cydnirn/opencode-limits/cmd/opencode-limits@latest
 The module path is lowercase `cydnirn`; `github.com/Cydnirn/...` is rejected by
 the toolchain. This puts the binary in `$(go env GOPATH)/bin` — on macOS and
 Linux that is normally `$HOME/go/bin`, on Windows `%USERPROFILE%\go\bin`, which
-Go's own installer adds to `PATH`. A `go install` binary reports version `dev`,
-so it cannot self-update (see [Updating](#updating)).
+Go's own installer adds to `PATH`. A binary installed this way does not have a
+linker-stamped version, but it reads the module version the Go toolchain embedded
+and self-updates from it like any other release build (see
+[Updating](#updating)). A binary built from a working-tree checkout has no release
+version and reports `dev`, which refuses to update.
 
 ### Build from source
 

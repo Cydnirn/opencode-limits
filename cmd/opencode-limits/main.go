@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -35,6 +36,63 @@ var (
 	commit    = "none"
 	buildDate = "unknown"
 )
+
+// resolveVersion fills in the version for builds that had no -ldflags, which
+// means `go install` from the module proxy: it cannot pass linker flags, so such
+// a binary would otherwise report "dev" forever and refuse to self-update.
+//
+// The Go toolchain records the module version it built from in the binary, so
+// read it back. A working-tree build has no version ("(devel)") and stays dev,
+// which is what we want: it is not a release and must not be replaced by one.
+func resolveVersion() {
+	if version != "dev" {
+		return
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi.Main.Version == "" || bi.Main.Version == "(devel)" {
+		return
+	}
+	mv := releaseVersionFromModule(bi.Main.Version)
+	if mv == "" {
+		return
+	}
+	version = mv
+	// Nothing stamps a commit or date for go install; report that honestly rather
+	// than inventing values.
+	commit, buildDate = "none (go install)", "unknown (go install)"
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			commit = s.Value
+		case "vcs.time":
+			buildDate = s.Value
+		}
+	}
+}
+
+// releaseVersionFromModule decides whether a module version recorded by the Go
+// toolchain names a real release, returning "" when it does not.
+//
+// Only a build fetched from the module proxy carries the tag verbatim ("v0.1.2").
+// A `go build` inside a working tree embeds a PSEUDO-version instead
+// ("v0.1.3-0.20261119113358-d31140ff1d41", sometimes with "+dirty"): that names
+// commits AFTER a tag, so comparing it numerically would treat a stale checkout as
+// older than the release it descends from and "update" it downwards. Those builds
+// keep reporting dev and refuse to self-update, which is the safe answer.
+func releaseVersionFromModule(mv string) string {
+	if mv == "" || mv == "(devel)" {
+		return ""
+	}
+	// Pseudo-versions are the only form with a "-0." infix or build metadata;
+	// a genuine semver pre-release like v0.2.0-rc.1 has neither.
+	if strings.Contains(mv, "-0.") || strings.Contains(mv, "+") {
+		return ""
+	}
+	if !strings.HasPrefix(mv, "v") {
+		return ""
+	}
+	return mv
+}
 
 // exitUpdateAvailable is the status used when --check-update finds a newer
 // release. Any non-zero value distinguishes that from "up to date"; 9 is used
@@ -67,6 +125,10 @@ func run() error {
 		doUpdate    = flag.Bool("update", false, "download, verify and install the newest release, then exit")
 	)
 	flag.Parse()
+
+	// Before anything reads version, so --version and the update check see the
+	// module version a `go install` build carries.
+	resolveVersion()
 
 	if *showVersion {
 		fmt.Printf("opencode-limits %s\n", version)

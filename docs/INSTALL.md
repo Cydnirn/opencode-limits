@@ -13,7 +13,7 @@ and Windows on amd64 and arm64. Nothing else needs to be installed to run it.
 |---|---|---|---|---|
 | One-line installer | no | yes | Linux, macOS | yes |
 | Manual binary download | no | yes | Linux, macOS, Windows | yes |
-| `go install` | yes | no | all | no (`dev` build) |
+| `go install` | yes | no | all | yes (reads the embedded module version) |
 | `make install` / `go build` | yes | no | all | no (`dev` build) |
 
 "Self-updates" means the binary carries a release version stamp, which is what
@@ -344,10 +344,17 @@ go install github.com/cydnirn/opencode-limits/cmd/opencode-limits@latest
 
 ### `flag provided but not defined: -check-update`
 
-The binary predates the self-update feature. v0.1.1 does not have these flags;
-they arrive in the release that follows it. Until that release exists, build
-from source (`make build`), which does include them. A binary reporting `dev`
-has no version to compare and refuses to update either way.
+The binary predates the self-update feature, which arrives in v0.1.2. Reinstall
+from a release — `v0.1.1` and older do not have these flags:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cydnirn/opencode-limits/main/install.sh | sh
+```
+
+A binary that reports version `dev` came from a working-tree build. It accepts
+the flags but refuses to update, because there is no release version to compare
+against. Publish-route builds (`go install`, a release download, `make build
+VERSION=vX.Y.Z`) all carry a version and update normally.
 
 ### `not signed in to OpenCode Console`
 
